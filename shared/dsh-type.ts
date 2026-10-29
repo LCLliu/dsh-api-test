@@ -65,12 +65,12 @@ export interface commandResponse {
 
 /**
  * `POST /api/sendmessage` 的响应。
- * 只表示消息已进入 dsh 收件箱；正文由前端轮询 `GET /api/reply` 获取。
+ * 只表示消息已进入 dsh 收件箱；正文由前端订阅 `GET /api/reply/stream`（SSE）获取。
  */
 export interface sendResponse {
     /** accepted=true 表示 session/prompt 已接收 */
     accepted?: true;
-    /** 本次消息的客户端 id，轮询 /api/reply 时原样带回 */
+    /** 本次消息的客户端 id，订阅 /api/reply/stream 时用它定位这一轮 */
     requestId?: string;
     /** 失败时的错误信息 */
     error?: string;
@@ -80,15 +80,15 @@ export interface sendResponse {
  * `GET /api/reply` 的响应：对某一轮回复的单次查询结果。
  * 后端每次只查一次，不在请求里等待。
  */
-export interface replyResponse {
-    /** true=本轮已结束，text/reason 可用；false 或缺失=还在跑，继续轮询 */
-    done?: boolean;
-    /** 本轮 assistant 文本（按 assistant/message 拼接） */
-    text?: string;
+/**
+ * 一轮回复的流式结果（SSE done 事件的负载）。
+ * 增量文本走 delta 事件，定稿文本以这里为准。
+ */
+export interface turnResult {
+    /** 本轮 assistant 文本（按已提交的 assistant/message 拼接） */
+    text: string;
     /** turn/end 的结束原因：completed / aborted / blocked / error / max-tokens ... */
-    reason?: string;
-    /** 失败时的错误信息 */
-    error?: string;
+    reason: string;
 }
 
 /**

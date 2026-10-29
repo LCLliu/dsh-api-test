@@ -46,10 +46,13 @@ export function SessionType({
     }
   };
 
+  // 流式输出时正文在同一个气泡里变长，用最后一条的长度一起触发贴底
+  const lastLength = chat.messages[chat.messages.length - 1]?.text.length ?? 0;
+
   useEffect(() => {
     const el = listRef.current;
     if (el !== null && stickToBottom.current) el.scrollTop = el.scrollHeight;
-  }, [chat.messages.length, chat.sending]);
+  }, [lastLength, chat.sending]);
 
   return (
     <>
@@ -68,7 +71,7 @@ export function SessionType({
             {item.text}
           </div>
         ))}
-        {chat.sending && <div className='bubble bubble-assistant typing'> 等待dsh 回复...</div>}
+        {chat.sending && !chat.streaming && <div className='bubble bubble-assistant typing'> 等待dsh 回复...</div>}
       </div>
 
       <ApprovalCards

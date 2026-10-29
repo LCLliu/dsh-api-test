@@ -5,14 +5,11 @@ import {
   createSession,
   executeCommand,
   fetchHistory,
-  fetchReply,
   loadCommands,
   sendPrompt,
+  streamReply,
 } from '../api';
 import { clearStoredChat, readStoredChat, writeStoredChat } from '../storage';
-
-const REPLY_POLL_MS = 1500;
-const REPLY_TIMEOUT_MS = 20 * 60_000;
 
 /**
  * 会话与消息流的全部状态：会话 id、消息、输入草稿、当前轮次、命令目录。
@@ -22,13 +19,14 @@ export const useChatSession = () => {
   const [messages, setMessages] = useState<chatMessage[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState<boolean>();
+  const [streaming, setStreaming] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [pendingRequestId, setPendingRequestId] = useState<string>();
   const [commands, setCommands] = useState<commandDescriptor[]>([]);
   const [commandsStatus, setCommandsStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [commandsError, setCommandsError] = useState('');
 
-  const pollToken = useRef(0);
+  const streamAbort = useRef<(() => void) | undefined>(undefined);
   const commandsPromise = useRef<{ sessionId: string; promise: Promise<commandDescriptor[]> } | null>(null);
 
   const pushMessage = (role: chatMessage['role'], text: string) => {
@@ -51,34 +49,62 @@ export const useChatSession = () => {
     return commandsPromise.current.promise;
   };
 
-  /** 只查一次、不等待；靠轮询把长于 HTTP 请求的一轮接回来。 */
-  const waitForReply = async (targetSessionId: string, requestId: string) => {
-    const token = ++pollToken.current;
-    const startedAt = Date.now();
+  /**
+   * 接一轮流式回复：增量写进同一个气泡，done 时用定稿文本覆盖。
+   * 切会话或新建对话时由 streamAbort 关掉事件流。
+   */
+  const streamTurn = (targetSessionId: string, requestId: string): Promise<void> => new Promise((resolve) => {
+    let bubbleId = '';
+    let buffer = '';
+    let closeStream: (() => void) | undefined;
 
-    while (true) {
-      if (pollToken.current !== token) return;
-
-      await new Promise((resolve) => setTimeout(resolve, REPLY_POLL_MS));
-
-      const reply = await fetchReply(targetSessionId, requestId);
-
-      if (reply?.done === true) {
-        const text = reply.text?.trim() ?? '';
-        pushMessage(
-          'assistant',
-          text !== '' ? text : `本轮没有文本回复，结束原因：${reply.reason ?? 'unknown'}`,
-        );
+    const write = (text: string) => {
+      if (bubbleId !== '') {
+        setMessages((list) => list.map((item) => (item.id === bubbleId ? { ...item, text } : item)));
         return;
       }
 
-      if (Date.now() - startedAt > REPLY_TIMEOUT_MS) {
-        throw new Error('等待回复超时（20 分钟），dsh 可能仍在执行');
-      }
-    }
-  };
+      // 刷新后接回同一轮时，最后一条就是刚才写了一半的 assistant 气泡，续着它写而不是再开一个
+      setMessages((list) => {
+        const last = list[list.length - 1];
+        bubbleId = last !== undefined && last.role === 'assistant' ? last.id : crypto.randomUUID();
+        return last !== undefined && last.role === 'assistant'
+          ? list.map((item) => (item.id === bubbleId ? { ...item, text } : item))
+          : [...list, { id: bubbleId, role: 'assistant', text }];
+      });
+    };
 
-  /** 提交输入：命中已知斜杠命令走 commands/execute，否则作为普通消息发送并轮询回复。 */
+    const stop = () => {
+      streamAbort.current = undefined;
+      setStreaming(false);
+      resolve();
+    };
+
+    setStreaming(true);
+    streamAbort.current = () => {
+      closeStream?.();
+      stop();
+    };
+
+    closeStream = streamReply(targetSessionId, requestId, {
+      onDelta: (delta) => {
+        buffer += delta;
+        write(buffer);
+      },
+      onDone: (result) => {
+        const text = result.text.trim();
+        write(text !== '' ? text : (buffer !== '' ? buffer : `本轮没有文本回复，结束原因：${result.reason}`));
+        stop();
+      },
+      onError: (message) => {
+        if (buffer !== '') write(`${buffer}\n（中断：${message}）`);
+        else pushMessage('error', message);
+        stop();
+      },
+    });
+  });
+
+  /** 提交输入：命中已知斜杠命令走 commands/execute，否则作为普通消息发送并接流式回复。 */
   const submit = async (): Promise<void> => {
     const text = input.trim();
     if (sessionId === '' || text === '' || sending) return;
@@ -104,7 +130,7 @@ export const useChatSession = () => {
 
       const requestId = await sendPrompt(sessionId, text);
       setPendingRequestId(requestId);
-      await waitForReply(sessionId, requestId);
+      await streamTurn(sessionId, requestId);
     } catch (error) {
       pushError(error);
     } finally {
@@ -130,10 +156,10 @@ export const useChatSession = () => {
   };
 
   /**
-   * 切到另一个对话,状态一次set完，不取消dsh的轮次，只停本地的轮询，切回来的时候历史自己会带结果回来
+   * 切到另一个对话,状态一次set完，不取消dsh的轮次，只断掉本地的事件流，切回来的时候历史自己会带结果回来
    */
   const loadSession = (id: string, history: chatMessage[]) => {
-    pollToken.current += 1;
+    streamAbort.current?.();
     commandsPromise.current = null;
     setSessionId(id);
     setMessages(history);
@@ -175,7 +201,7 @@ export const useChatSession = () => {
   };
 
   const reset = () => {
-    pollToken.current += 1;
+    streamAbort.current?.();
     clearStoredChat();
     commandsPromise.current = null;
     setSessionId('');
@@ -204,7 +230,7 @@ export const useChatSession = () => {
     );
   }, [sessionId, commandsStatus]);
 
-  // 刷新后接回上一次会话；pendingRequestId 还在说明那一轮可能仍在跑，继续轮询
+  // 刷新后接回上一次会话；pendingRequestId 还在说明那一轮可能仍在跑，继续接它的流
   useEffect(() => {
     const saved = readStoredChat();
     if (saved === undefined) return;
@@ -216,12 +242,10 @@ export const useChatSession = () => {
 
     setPendingRequestId(saved.pendingRequestId);
     setSending(true);
-    void waitForReply(saved.sessionId, saved.pendingRequestId)
-      .catch(pushError)
-      .finally(() => {
-        setPendingRequestId(undefined);
-        setSending(false);
-      });
+    void streamTurn(saved.sessionId, saved.pendingRequestId).finally(() => {
+      setPendingRequestId(undefined);
+      setSending(false);
+    });
   }, []);
 
   useEffect(() => {
@@ -240,6 +264,7 @@ export const useChatSession = () => {
     input,
     setInput,
     sending,
+    streaming,
     canceling,
     pendingRequestId,
     commands,

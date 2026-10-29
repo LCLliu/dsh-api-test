@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { dsh } from '../dsh/client.js';
-import { findReply } from '../dsh/reply.js';
+import { followTurn } from '../dsh/stream.js';
 import {
   buildRequirementsPromptBatch,
   loadRequirementsForPrompt,
@@ -77,7 +77,10 @@ export class classificationJobError extends Error {
 const jobs = new Map<string, classificationJob>();
 let activeJobId: string | undefined;
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** 每个在跑的任务留一个取消入口，停止任务时直接断掉正在等的流。 */
+const jobAborts = new Map<string, AbortController>();
+
+const TURN_TIMEOUT_MS = 10 * 60_000;
 
 /** 有分类任务正在跑时，禁止再启动或重置会话。 */
 export const isClassificationJobActive = (): boolean => {
@@ -86,18 +89,33 @@ export const isClassificationJobActive = (): boolean => {
   return job !== undefined && job.status === 'running';
 };
 
+type turnOutcome = { ok: true; text: string; reason: string } | { ok: false; error: string };
+
+/**
+ * 流式等一轮回复：增量边到边写进 batch.text，
+ * 面板按 1.5 秒轮询任务进度时就能看到回复逐步变长。
+ */
 const waitForClassificationTurn = async (
   job: classificationJob,
+  batch: classificationBatchProgress,
   requestId: string,
-): Promise<{ done: true; text: string; reason: string } | undefined> => {
-  const startedAt = Date.now();
-  while (true) {
-    await sleep(1500);
-    if (job.cancelled) return undefined;
+): Promise<turnOutcome> => {
+  const controller = new AbortController();
+  jobAborts.set(job.id, controller);
 
-    const reply = await findReply(job.sessionId, requestId);
-    if (reply.done) return reply;
-    if (Date.now() - startedAt > 10 * 60_000) return undefined;
+  try {
+    const reply = await followTurn(job.sessionId, requestId, {
+      timeoutMs: TURN_TIMEOUT_MS,
+      signal: controller.signal,
+      onDelta: (delta) => {
+        batch.text = (batch.text ?? '') + delta;
+      },
+    });
+    return { ok: true, text: reply.text, reason: reply.reason };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    jobAborts.delete(job.id);
   }
 };
 
@@ -161,10 +179,10 @@ const runClassificationJob = async (
           content: [{ type: 'text', text: built.prompt }],
         });
 
-        const reply = await waitForClassificationTurn(job, requestId);
-        if (reply === undefined) {
+        const reply = await waitForClassificationTurn(job, batch, requestId);
+        if (reply.ok === false) {
           const endedAt = Date.now();
-          const error = job.cancelled ? '已取消' : '等待回复超时';
+          const error = reply.error;
           batch.status = 'error';
           batch.error = error;
           batch.endedAt = endedAt;
@@ -193,7 +211,7 @@ const runClassificationJob = async (
 
           if (!job.cancelled) {
             job.status = 'error';
-            job.error = `第 ${batch.index} 批等待回复超时`;
+            job.error = `第 ${batch.index} 批${error}`;
             break;
           }
         } else {
@@ -388,6 +406,7 @@ export const cancelClassificationJob = async (
   if (job.status !== 'running') return { accepted: true, status: job.status };
 
   job.cancelled = true;
+  jobAborts.get(jobId)?.abort();
   try {
     await dsh.cancl(job.sessionId);
   } catch {

@@ -4,6 +4,7 @@
 
 - 后端 `src/server.ts`：Express 5 的 BFF。启动时用 `.env` 里的 `DSH_TOKEN` 换一次登录 cookie（cookie 绑定 authority，换到就缓存复用，失败自动重换），再带 `rpcId` 转发 `api/<method>` 请求。token 只留在服务端，浏览器拿不到。
 - 前端 `web/src`：Vite + React 19。创建/续聊会话、`/` 命令补全、审批与提问卡片、按 cwd 分组的历史会话抽屉。
+- 回复流式：`src/dsh/stream.ts` 用 WebSocket 订阅 dsh 的 `session/follow`（带 `assistantStream`），把 `text-delta` 经 `/api/reply/stream`（SSE）推给浏览器逐字渲染；定稿文本取持久化的 `assistant/message`，断流也不会少字。分批分类任务复用同一个 `followTurn`，边收边更新批次回复。
 - 类型 `shared/dsh-type.ts`：前后端共用的 dsh 报文结构。
 
 | 地址 | 作用 |

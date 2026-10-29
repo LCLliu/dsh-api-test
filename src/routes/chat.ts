@@ -1,9 +1,14 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { dsh } from '../dsh/client.js';
-import { findReply } from '../dsh/reply.js';
+import { followTurn } from '../dsh/stream.js';
 
-/** 会话创建、发消息、查回复、取消当前轮。 */
+/** SSE 一帧：事件名 + JSON 负载。 */
+const writeEvent = (res: Response, name: string, data: unknown): void => {
+  res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+};
+
+/** 会话创建、发消息、流式读回复、取消当前轮。 */
 export const createChatRouter = (): Router => {
   const router = Router();
 
@@ -37,7 +42,8 @@ export const createChatRouter = (): Router => {
     }
   });
 
-  router.get('/reply', async (req, res) => {
+  /** 用 SSE 推一轮回复：delta 逐段、done 定稿、error 失败；客户端断开即取消订阅。 */
+  router.get('/reply/stream', (req: Request, res: Response) => {
     const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : '';
     const requestId = typeof req.query.requestId === 'string' ? req.query.requestId : '';
     if (sessionId === '' || requestId === '') {
@@ -45,11 +51,27 @@ export const createChatRouter = (): Router => {
       return;
     }
 
-    try {
-      res.json(await findReply(sessionId, requestId));
-    } catch (err) {
-      res.status(502).json({ error: (err as Error).message });
-    }
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+
+    const controller = new AbortController();
+    req.on('close', () => controller.abort());
+
+    void followTurn(sessionId, requestId, {
+      signal: controller.signal,
+      onDelta: (text) => writeEvent(res, 'delta', { text }),
+    }).then(
+      (result) => writeEvent(res, 'done', result),
+      (error: unknown) => writeEvent(res, 'error', {
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    ).finally(() => {
+      res.end();
+    });
   });
 
   router.post('/cancel', async (req, res) => {

@@ -8,12 +8,12 @@ import {
   type createResponse,
   type pendingQuestion,
   type questionAnswerItem,
-  type replyResponse,
   type requirementItem,
   type requirementsResponse,
   type sendResponse,
   type sessionListItem,
   type sessionsResponse,
+  type turnResult,
 } from '../../shared/dsh-type.ts';
 
 /** 统一处理JSON 响应：非 2xx 一律抛 Error，优先用后端返回的中文错误。 */
@@ -66,7 +66,7 @@ export const loadCommands = async (sessionId: string): Promise<commandDescriptor
   return body;
 };
 
-/** 发送一条消息，只返回 requestId，正文靠 fetchReply 轮询获取 */
+/** 发送一条消息，只返回 requestId，正文靠 streamReply 接流获取 */
 export const sendPrompt = async (sessionId: string, text: string): Promise<string> => {
   const body = await requestJson<sendResponse>('/api/sendmessage', '发送失败', post({ sessionId, text }));
 
@@ -77,21 +77,49 @@ export const sendPrompt = async (sessionId: string, text: string): Promise<strin
 };
 
 /**
- * 单次查询某一轮是否结束。
- * 网络失败返回 null（后端重启、断网都属正常，交给调用方继续轮询）；HTTP 报错才抛。
+ * 订阅一轮回复的流式输出（SSE）。
+ * 返回关闭连接的函数；done/error 之后流自己会关。
  */
-export const fetchReply = async (sessionId: string, requestId: string): Promise<replyResponse | null> => {
-  const res = await fetch(
-    `/api/reply?sessionId=${encodeURIComponent(sessionId)}&requestId=${encodeURIComponent(requestId)}`,
-  ).catch(() => null);
+export const streamReply = (
+  sessionId: string,
+  requestId: string,
+  handlers: {
+    onDelta: (text: string) => void;
+    onDone: (result: turnResult) => void;
+    onError: (error: string) => void;
+  },
+): (() => void) => {
+  const query = new URLSearchParams({ sessionId, requestId });
+  const source = new EventSource(`/api/reply/stream?${query}`);
 
-  if (res === null) return null;
+  const read = <T>(raw: unknown): T | undefined => {
+    if (typeof raw !== 'string') return undefined;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return undefined;
+    }
+  };
 
-  if (!res.ok) {
-    const failed = await res.json().catch(() => ({})) as replyResponse;
-    throw new Error(failed.error ?? `查询回复失败（HTTP ${res.status}）`);
-  }
-  return await res.json().catch(() => null);
+  source.addEventListener('delta', (event) => {
+    const data = read<{ text?: string }>((event as MessageEvent).data);
+    if (data?.text !== undefined) handlers.onDelta(data.text);
+  });
+
+  source.addEventListener('done', (event) => {
+    source.close();
+    const data = read<turnResult>((event as MessageEvent).data);
+    if (data !== undefined) handlers.onDone(data);
+    else handlers.onError('本轮已结束，但回复结果解析失败');
+  });
+
+  source.addEventListener('error', (event) => {
+    source.close();
+    const data = read<{ error?: string }>((event as MessageEvent).data);
+    handlers.onError(data?.error ?? '与后端的事件流已断开');
+  });
+
+  return () => source.close();
 };
 
 /** 执行一条斜杠命令，line 必须带前导斜杠。 */
