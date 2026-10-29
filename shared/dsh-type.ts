@@ -386,6 +386,8 @@ export interface requirementClassification {
     sessionId?: string;
     reason?: string;
     error?: string;
+    /** 这条需求的分类结果落盘路径，相对需求 JSON 所在目录（.agentGraDocs/xxx.json） */
+    agentDocPath?: string;
     classifiedAt?: number;
 }
 

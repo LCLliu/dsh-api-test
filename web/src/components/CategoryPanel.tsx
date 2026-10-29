@@ -84,11 +84,12 @@ export function CategoryPanel({ open, onClose, send, onViewSession }: categoryPa
 
     const allClassified = status === 'ready' && items.length > 0 && pendingCount === 0;
 
+    // 任务开始、每批切换、结束时各补拉一次：后端在发提示词前就把这批写成 running 了，
+    // 只在任务结束才刷新的话，进行中的条目会一直停在未分类。
     useEffect(() => {
-        if (send.status === 'done' || send.status === 'cancelled' || send.status === 'error') {
-            void refresh();
-        }
-    }, [send.status, refresh]);
+        if (send.status === 'idle' || send.status === 'starting') return;
+        void refresh();
+    }, [send.status, runningBatch?.index, refresh]);
 
     return (
         <aside className='category-panel' data-open={open ? 'true' : 'false'} ref={panelRef}>

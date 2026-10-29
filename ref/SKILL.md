@@ -91,7 +91,8 @@ description: Analyze smart-cockpit (智能座舱) test requirements into a stric
 ## 输入处理
 
 - 输入通常包含 work item ID、summary、PRD 和需求原文；判断时以原文为准，summary 只作辅助。
-- 一次传入多条需求（每条带 work item ID）时，逐条独立分析：每条输出一个 JSON 对象，对象间用换行分隔，保持输入顺序，并在对象最外层增加 `"workItemID": "<原 ID>"` 字段。不要跨需求合并结论。
+- 一次传入多条需求（每条带 work item ID）时，逐条独立分析并保持输入顺序：整条回复由 N 个 JSON 对象组成，对象之间用空行分隔。每个对象最外层必须带 `"workItemID": "<原 ID>"`；不要包成数组、不要加代码块围栏、不要写序号标题或任何说明文字。
+- `workItemID` 要与输入里的 ID 完全一致——下游按它把每条结果写成独立文件，ID 漏写或对不上会让该条被判为未分类。
 - 需求原文标注「未找到原文」时，只依据 summary/PRD 分析，并按第 2 条规定的区间下调 `confidence`。
 
 ## 参考

@@ -2,6 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { dsh } from '../dsh/client.js';
 import { followTurn } from '../dsh/stream.js';
 import {
+  matchBatchResults,
+  writeAgentDocs,
+  type classificationResult,
+} from './agent-docs.js';
+import {
   buildRequirementsPromptBatch,
   loadRequirementsForPrompt,
   persistClassification,
@@ -216,9 +221,23 @@ const runClassificationJob = async (
           }
         } else {
           const endedAt = Date.now();
-          const failed = reply.reason === 'aborted' || reply.reason === 'error';
+          const turnFailed = reply.reason === 'aborted' || reply.reason === 'error';
+
+          // 每条需求一个 JSON 落到 .agentGraDocs；解析或写盘失败都算这条没成，下次重跑会再捞回来
+          const results = turnFailed
+            ? new Map<string, classificationResult>()
+            : matchBatchResults(batch.itemIds, reply.text);
+          let docs = new Map<string, string>();
+          let docError: string | undefined;
+          try {
+            docs = await writeAgentDocs(source, results);
+          } catch (err) {
+            docError = err instanceof Error ? err.message : String(err);
+          }
+
+          const failed = turnFailed || docError !== undefined;
           const status: 'done' | 'error' = failed ? 'error' : 'done';
-          const error = failed ? `结束原因：${reply.reason}` : undefined;
+          const error = turnFailed ? `结束原因：${reply.reason}` : docError;
 
           batch.status = status;
           batch.text = reply.text;
@@ -226,18 +245,24 @@ const runClassificationJob = async (
           batch.error = error;
           batch.endedAt = endedAt;
 
-          const updates: classificationUpdate[] = batch.itemIds.map((id) => ({
-            workItemID: id,
-            classification: {
-              status,
-              batch: batch.index,
-              requestId,
-              sessionId: job.sessionId,
-              reason: reply.reason,
-              ...(error === undefined ? {} : { error }),
-              classifiedAt: endedAt,
-            },
-          }));
+          const updates: classificationUpdate[] = batch.itemIds.map((id) => {
+            const parsed = results.has(id);
+            const itemError = error ?? (parsed ? undefined : '回复里没解析到这条需求的 JSON');
+            const docPath = docs.get(id);
+            return {
+              workItemID: id,
+              classification: {
+                status: status === 'done' && parsed ? 'done' : 'error',
+                batch: batch.index,
+                requestId,
+                sessionId: job.sessionId,
+                reason: reply.reason,
+                ...(itemError === undefined ? {} : { error: itemError }),
+                ...(docPath === undefined ? {} : { agentDocPath: docPath }),
+                classifiedAt: endedAt,
+              },
+            };
+          });
           await persistClassification(source, updates, {
             batch: batch.index,
             requestId,

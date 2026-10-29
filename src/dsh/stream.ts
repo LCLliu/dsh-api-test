@@ -13,8 +13,13 @@ type followFrame =
   | { type: 'assistant-stream'; frame?: unknown };
 
 interface turnScan {
-  /** 本轮用户消息的 seq；没翻到说明提示词还没落盘 */
-  userSeq: number | undefined;
+  /**
+   * 本轮事件的水位线：本轮 assistant/message 和 turn/end 都取 seq 大于它的。
+   * 默认是开始扫描时的日志水位；找到本轮 user/message 后收紧成它的 seq。
+   */
+  anchorSeq: number;
+  /** 是否已经按 rpcId 精确锚定到本轮的用户消息 */
+  anchored: boolean;
   /** 已提交的 assistant 文本，按事件 seq 去重 */
   messages: Map<number, string>;
   /** turn/end 的结束原因；有值说明这一轮已经跑完 */
@@ -43,15 +48,18 @@ const isTurnStart = (event: sessionEvent, requestId: string): boolean =>
   event.type === 'user/message' && event.data?.source?.rpcId === requestId;
 
 /**
- * 按 seq 升序把事件并进扫描结果：先定位本轮用户消息，之后的 assistant 文本才属于本轮。
+ * 按 seq 升序把事件并进扫描结果。
+ * 本轮的 user/message 是在 turn/start 之后才落盘的，所以它可能已经翻过去了：
+ * 找不到就继续用开始扫描时的水位当锚点，只靠 turn/start 之后的事件判定本轮。
  * 快照、翻页和实时帧共用这条规则，重复事件靠 Map 按 seq 去掉。
  */
 const absorb = (scan: turnScan, event: sessionEvent, requestId: string): void => {
-  if (scan.userSeq === undefined) {
-    if (isTurnStart(event, requestId)) scan.userSeq = event.seq;
+  if (!scan.anchored && isTurnStart(event, requestId)) {
+    scan.anchored = true;
+    scan.anchorSeq = event.seq;
     return;
   }
-  if (event.seq <= scan.userSeq) return;
+  if (event.seq <= scan.anchorSeq) return;
 
   if (event.type === 'assistant/message') {
     const text = eventText(event);
@@ -71,7 +79,8 @@ const scanTurn = async (sessionId: string, requestId: string): Promise<turnScan>
   const projections = await dsh.projections(sessionId);
   if (projections === null) throw new Error(`会话不存在：${sessionId}`);
 
-  const scan: turnScan = { userSeq: undefined, messages: new Map(), reason: undefined };
+  // 找不到本轮 user/message 时，就用当前水位当锚点：本轮的事件一定都排在它后面
+  const scan: turnScan = { anchorSeq: projections.asOfSeq, anchored: false, messages: new Map(), reason: undefined };
   let beforeSeq: number | undefined;
 
   for (let index = 0; index < MAX_PAGES; index += 1) {
@@ -79,7 +88,7 @@ const scanTurn = async (sessionId: string, requestId: string): Promise<turnScan>
     const events = page.records.map((record) => record.event).filter((event) => event !== undefined);
     for (const event of events) absorb(scan, event, requestId);
 
-    if (page.hasMore && events.length > 0 && scan.userSeq === undefined) {
+    if (page.hasMore && events.length > 0 && !scan.anchored) {
       beforeSeq = Math.min(...events.map((event) => event.seq));
       continue;
     }
@@ -186,14 +195,13 @@ export const followTurn = async (
       if (part?.attemptId === undefined) return;
 
       if (part.type === 'start') {
-        const startedAfter = part.startedAfterSeq;
-        if (scan.userSeq === undefined || startedAfter === undefined || startedAfter >= scan.userSeq) {
+        if (part.startedAfterSeq === undefined || part.startedAfterSeq >= scan.anchorSeq) {
           attempts.add(part.attemptId);
         }
         return;
       }
 
-      if (part.type !== 'chunk' || scan.userSeq === undefined || !attempts.has(part.attemptId)) return;
+      if (part.type !== 'chunk' || !attempts.has(part.attemptId)) return;
 
       const delta = asTextDelta(part.chunk);
       if (delta !== undefined && delta !== '') {

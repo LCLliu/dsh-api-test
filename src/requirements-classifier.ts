@@ -1,8 +1,28 @@
+import { readFileSync } from 'node:fs';
 import { readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { requirementClassification, requirementItem } from '../shared/dsh-type.js';
 
 const CONTENT_DIR = 'content';
+const SKILL_FILE = 'ref/SKILL.md';
+
+/** frontmatter 是给 skill 加载器看的，拼进提示词只留正文规则。 */
+const stripFrontmatter = (text: string): string => text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '');
+
+/**
+ * 读取分类技能正文。文件缺失或为空时返回 undefined，
+ * 让提示词退回不带规则的写法，而不是让整个分批任务失败。
+ */
+const skillRules = (): string | undefined => {
+  let raw: string;
+  try {
+    raw = readFileSync(path.resolve(process.cwd(), SKILL_FILE), 'utf-8');
+  } catch {
+    return undefined;
+  }
+  const body = stripFrontmatter(raw).trim();
+  return body === '' ? undefined : body;
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -111,6 +131,38 @@ const writeRequirements = async (file: string, data: unknown): Promise<void> => 
     await rm(tmp, { force: true }).catch(() => {});
     throw new Error(`写入需求 JSON 失败：${file}`);
   }
+};
+
+/**
+ * 后端启动时把卡在 running 的条目降级成 error。
+ * 分批任务只活在进程里，重启后没人再收那一轮，running 就成了假状态；
+ * 降级后下一次启动任务会把这些条目重新捞起来发。
+ * @returns 被降级的条数
+ */
+export const recoverStaleRunning = async (source: string): Promise<number> => {
+  const file = path.resolve(source);
+
+  let rows: unknown[];
+  let data: unknown;
+  try {
+    data = JSON.parse((await readFile(file, 'utf-8')).replace(/^\uFEFF/, ''));
+    rows = pickRows(data);
+  } catch {
+    return 0;
+  }
+
+  let changed = 0;
+  for (const row of rows) {
+    if (!isRecord(row)) continue;
+    const classification = row.classification;
+    if (isRecord(classification) && classification.status === 'running') {
+      row.classification = { ...classification, status: 'error', error: '后端重启，本轮结果未知' };
+      changed += 1;
+    }
+  }
+
+  if (changed > 0) await writeRequirements(file, data);
+  return changed;
 };
 
 export interface classificationUpdate {
@@ -295,13 +347,22 @@ export interface requirementsPrompt {
   missingContent: string[];
 }
 
+/** 分类指令 = 角色 + 技能规则；预览和分批共用，保证看到的就是发出去的。 */
+const classificationIntro = (): string => {
+  const rules = skillRules();
+  return [
+    '你是一位资深的车机工程师，请根据下面的技能规则对需求条目逐条分类。',
+    rules ?? '（未找到 ref/SKILL.md：请按模块、测试场景、文件依赖、计算逻辑分类，每条需求单独输出一个 JSON 对象。）',
+  ].join('\n\n');
+};
+
 /** 全量预览：把所有需求拼成一段提示词。 */
 export const buildRequirementsPrompt = async (source: string): Promise<requirementsPrompt> => {
   const loaded = await loadRequirementsForPrompt(source);
   return {
     prompt: loaded.items.length === 0
       ? '以下是需求条目及其原文：\n\n（无需求）'
-      : ['你是一位资深的车机工程师，我需要你根据以下内容以及（skill）来对于需求条目进行分类','以下是需求条目及其原文：', ...loaded.items.map(renderPromptItem)].join('\n\n'),
+      : [classificationIntro(), '以下是需求条目及其原文：', ...loaded.items.map(renderPromptItem)].join('\n\n'),
     count: loaded.items.length,
     missingContent: loaded.missingContent,
   };
@@ -323,7 +384,7 @@ export const buildRequirementsPromptBatch = (
   batchTotal: number,
 ): requirementsPromptBatch => {
   const slice = items.slice(offset, offset + limit);
-  const header = `以下是需求条目及其原文（第 ${batchIndex}/${batchTotal} 批，本批 ${slice.length} 条，总 ${items.length} 条）：`;
+  const header = `${classificationIntro()}\n\n以下是需求条目及其原文（第 ${batchIndex}/${batchTotal} 批，本批 ${slice.length} 条，总 ${items.length} 条）：`;
   return {
     prompt: [header, ...slice.map((item, index) => renderPromptItem(item, offset + index))].join('\n\n'),
     count: slice.length,
