@@ -88,8 +88,10 @@ export const streamReply = (
     onDone: (result: turnResult) => void;
     onError: (error: string) => void;
   },
+  options: { timeoutMs?: number } = {},
 ): (() => void) => {
   const query = new URLSearchParams({ sessionId, requestId });
+  if (options.timeoutMs !== undefined) query.set('timeoutMs', String(options.timeoutMs));
   const source = new EventSource(`/api/reply/stream?${query}`);
 
   const read = <T>(raw: unknown): T | undefined => {

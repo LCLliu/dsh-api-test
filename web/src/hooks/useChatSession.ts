@@ -9,7 +9,11 @@ import {
   sendPrompt,
   streamReply,
 } from '../api';
+import { localMessageId, mergeIncoming } from '../messageMerge';
 import { clearStoredChat, readStoredChat, writeStoredChat } from '../storage';
+
+/** 分批分类单轮上限 10 分钟（后端 jobs.ts），这里留一点余量，避免订阅永久挂着。 */
+const BATCH_FOLLOW_TIMEOUT_MS = 11 * 60_000;
 
 /**
  * 会话与消息流的全部状态：会话 id、消息、输入草稿、当前轮次、命令目录。
@@ -27,10 +31,14 @@ export const useChatSession = () => {
   const [commandsError, setCommandsError] = useState('');
 
   const streamAbort = useRef<(() => void) | undefined>(undefined);
+  /** 事件流是否占着聊天区：刷新和接别的轮次都要让路，避免半截文本被再补一条。 */
+  const streamingRef = useRef(false);
+  /** 从按下发送到第一轮增量到达之间的空档，同样视为忙。 */
+  const busyRef = useRef(false);
   const commandsPromise = useRef<{ sessionId: string; promise: Promise<commandDescriptor[]> } | null>(null);
 
   const pushMessage = (role: chatMessage['role'], text: string) => {
-    setMessages((list) => [...list, { id: crypto.randomUUID(), role, text }]);
+    setMessages((list) => [...list, { id: localMessageId(), role, text }]);
   };
 
   const pushError = (error: unknown) => {
@@ -50,10 +58,15 @@ export const useChatSession = () => {
   };
 
   /**
-   * 接一轮流式回复：增量写进同一个气泡，done 时用定稿文本覆盖。
+   * 接一轮流式回复：增量写进气泡，done 时用定稿文本覆盖。
    * 切会话或新建对话时由 streamAbort 关掉事件流。
+   * adoptTrailingAssistant 只给刷新后接回同一轮用——那时最后一条就是自己写了一半的气泡。
    */
-  const streamTurn = (targetSessionId: string, requestId: string): Promise<void> => new Promise((resolve) => {
+  const streamTurn = (
+    targetSessionId: string,
+    requestId: string,
+    options: { adoptTrailingAssistant?: boolean; timeoutMs?: number } = {},
+  ): Promise<void> => new Promise((resolve) => {
     let bubbleId = '';
     let buffer = '';
     let closeStream: (() => void) | undefined;
@@ -64,11 +77,11 @@ export const useChatSession = () => {
         return;
       }
 
-      // 刷新后接回同一轮时，最后一条就是刚才写了一半的 assistant 气泡，续着它写而不是再开一个
       setMessages((list) => {
         const last = list[list.length - 1];
-        bubbleId = last !== undefined && last.role === 'assistant' ? last.id : crypto.randomUUID();
-        return last !== undefined && last.role === 'assistant'
+        const reuse = options.adoptTrailingAssistant === true && last !== undefined && last.role === 'assistant';
+        bubbleId = reuse ? last.id : localMessageId();
+        return reuse
           ? list.map((item) => (item.id === bubbleId ? { ...item, text } : item))
           : [...list, { id: bubbleId, role: 'assistant', text }];
       });
@@ -76,10 +89,12 @@ export const useChatSession = () => {
 
     const stop = () => {
       streamAbort.current = undefined;
+      streamingRef.current = false;
       setStreaming(false);
       resolve();
     };
 
+    streamingRef.current = true;
     setStreaming(true);
     streamAbort.current = () => {
       closeStream?.();
@@ -101,7 +116,7 @@ export const useChatSession = () => {
         else pushMessage('error', message);
         stop();
       },
-    });
+    }, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
   });
 
   /** 提交输入：命中已知斜杠命令走 commands/execute，否则作为普通消息发送并接流式回复。 */
@@ -112,6 +127,7 @@ export const useChatSession = () => {
     pushMessage('user', text);
     setInput('');
     setSending(true);
+    busyRef.current = true;
     try {
       const name = text.match(/^\/(\S+)/)?.[1];
 
@@ -134,6 +150,7 @@ export const useChatSession = () => {
     } catch (error) {
       pushError(error);
     } finally {
+      busyRef.current = false;
       setPendingRequestId(undefined);
       setSending(false);
     }
@@ -175,20 +192,36 @@ export const useChatSession = () => {
     setMessages((list) => [...older, ...list]);
   }
 
-  /** 只补新增消息，避免覆盖已经加载的更早历史。 */
+  /** 只补新增消息，并认领本地乐观气泡，避免刷新一次多出一条重复。 */
   const refreshHistory = useCallback(async (): Promise<void> => {
-    if (sessionId === '') return;
+    if (sessionId === '' || streamingRef.current) return;
     try {
       const page = await fetchHistory(sessionId, 30);
-      setMessages((current) => {
-        const seen = new Set(current.map((message) => message.id));
-        const incoming = page.messages.filter((message) => !seen.has(message.id));
-        return incoming.length === 0 ? current : [...current, ...incoming];
-      });
+      setMessages((current) => mergeIncoming(current, page.messages));
     } catch {
       // 自动刷新失败不打断当前界面
     }
   }, [sessionId]);
+
+  /**
+   * 分批分类任务在同一会话新起一轮：先补拉历史，让这轮的 prompt 立刻出现在会话里，
+   * 再接这一轮的流做打字机输出。聊天区自己正忙时直接让路。
+   */
+  const followBatch = useCallback(async (
+    targetSessionId: string,
+    requestId: string,
+  ): Promise<void> => {
+    if (targetSessionId === '' || streamingRef.current || busyRef.current) return;
+    await refreshHistory();
+    if (busyRef.current || streamingRef.current) return;
+    // 这一轮不是聊天区自己发的，不锁输入；用 streaming 让历史刷新在接流期间让路
+    setStreaming(true);
+    try {
+      await streamTurn(targetSessionId, requestId, { timeoutMs: BATCH_FOLLOW_TIMEOUT_MS });
+    } finally {
+      setStreaming(false);
+    }
+  }, [refreshHistory]);
 
   /** 打开一个已有会话（用于“查看分类会话”），加载后可以继续聊天。 */
   const openSession = async (id: string): Promise<void> => {
@@ -242,7 +275,7 @@ export const useChatSession = () => {
 
     setPendingRequestId(saved.pendingRequestId);
     setSending(true);
-    void streamTurn(saved.sessionId, saved.pendingRequestId).finally(() => {
+    void streamTurn(saved.sessionId, saved.pendingRequestId, { adoptTrailingAssistant: true }).finally(() => {
       setPendingRequestId(undefined);
       setSending(false);
     });
@@ -279,6 +312,7 @@ export const useChatSession = () => {
     loadSession,
     prependMessages,
     refreshHistory,
+    followBatch,
     openSession,
   };
 };

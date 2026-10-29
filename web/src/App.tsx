@@ -25,8 +25,30 @@ export function App() {
 
   const classificationSessionId = requirementSend.sessionId || requirementSend.job?.sessionId || '';
   const completedBatches = requirementSend.job?.batches.filter((batch) => batch.status === 'done').length ?? 0;
+  const runningBatch = requirementSend.job?.batches.find((batch) => batch.status === 'running');
+  const runningRequestId = runningBatch?.requestId;
+  const followedRequestId = useRef('');
 
-  // 分类会话正好是当前聊天时，每批完成/任务结束都补拉一次历史
+  // 分类会话就是当前聊天时：批次一开跑就把 prompt 补进会话并接上这轮的流，不等它结束
+  useEffect(() => {
+    if (classificationSessionId === '' || chat.sessionId !== classificationSessionId) return;
+    if (requirementSend.status !== 'running' || runningRequestId === undefined) return;
+
+    // 同一个批次只接一次；切进/切出这个会话会换 key，重新接上正在跑的那轮
+    const followKey = `${chat.sessionId}:${runningRequestId}`;
+    if (followedRequestId.current === followKey) return;
+
+    followedRequestId.current = followKey;
+    void chat.followBatch(classificationSessionId, runningRequestId);
+  }, [
+    classificationSessionId,
+    chat.sessionId,
+    chat.followBatch,
+    requirementSend.status,
+    runningRequestId,
+  ]);
+
+  // 每批完成/任务结束再补拉一次，把这轮定稿文本和命令消息带回来
   useEffect(() => {
     if (classificationSessionId === '' || chat.sessionId !== classificationSessionId) return;
     if (requirementSend.status === 'idle' || requirementSend.status === 'starting') return;

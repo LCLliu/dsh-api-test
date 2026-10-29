@@ -61,8 +61,13 @@ export const createChatRouter = (): Router => {
     const controller = new AbortController();
     req.on('close', () => controller.abort());
 
+    // 订阅别人已经起好的轮次（分批分类任务）时，前端会带超时，避免这一轮已结束时一直挂着
+    const requestedTimeout = Number(req.query.timeoutMs);
+    const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0 ? requestedTimeout : undefined;
+
     void followTurn(sessionId, requestId, {
       signal: controller.signal,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
       onDelta: (text) => writeEvent(res, 'delta', { text }),
     }).then(
       (result) => writeEvent(res, 'done', result),
