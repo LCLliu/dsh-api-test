@@ -351,7 +351,7 @@ export interface sessionListItem {
     title: string;
     /** 最后一条人写消息的时间，毫秒 */
     updatedAt: number;
-    /** 会话工作目录；resume 时要原样带回去 */
+    /** 会话工作目录，侧边栏按它分组 */
     cwd?: string;
     /** 当前是否有轮次正在跑 */
     running: boolean;
@@ -360,13 +360,6 @@ export interface sessionListItem {
 /** GET /api/sessions 的响应 */
 export interface sessionsResponse {
     items?: sessionListItem[];
-    error?: string;
-}
-
-/** POST /api/resume 的响应：adopt 之后以返回的 sessionId 为准 */
-export interface resumeResponse {
-    sessionId?: string;
-    agentPreset?: string;
     error?: string;
 }
 

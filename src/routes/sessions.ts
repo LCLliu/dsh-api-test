@@ -19,20 +19,6 @@ export const createSessionsRouter = (): Router => {
     }
   });
 
-  router.post('/resume', async (req, res) => {
-    const { sessionId, cwd } = req.body as { sessionId?: string; cwd?: string };
-    if (!sessionId) {
-      res.status(400).json({ error: 'sessionId 必填' });
-      return;
-    }
-
-    try {
-      res.json(await dsh.resumeSession(sessionId, cwd));
-    } catch (err) {
-      res.status(502).json({ error: (err as Error).message });
-    }
-  });
-
   router.get('/history', async (req, res) => {
     const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : '';
     const beforeSeq = typeof req.query.beforeSeq === 'string' ? Number(req.query.beforeSeq) : undefined;

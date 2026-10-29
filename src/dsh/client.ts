@@ -87,12 +87,6 @@ export const dsh = {
   createSession: (request: { workspaceId?: string; cwd?: string; sessionId?: string; agentPreset?: string } = {}) =>
     sendMeil<sessionCreateValue>('session/create', { request }),
 
-  /** 认领已经存在的会话（通过 session/create 携带 sessionId 走 adopt 分支） */
-  resumeSession: (sessionId: string, cwd?: string) =>
-    sendMeil<sessionCreateValue>('session/create', {
-      request: { sessionId, ...(cwd === undefined ? {} : { cwd }) },
-    }),
-
   /** 发送用户信息，只返回 accept 回执，AI 的正文在事件流里面 */
   prompt: (request: sessionPromptRequest) => sendMeil<sessionPromptValue>('session/prompt', { request }),
 

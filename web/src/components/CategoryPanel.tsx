@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { requirementItem } from '../../../shared/dsh-type.ts';
 import type { requirementSend } from '../hooks/useRequirementSend';
 import { useRequirements } from '../hooks/useRequirements';
+import { usePanelResize } from '../hooks/usePanelResize';
 
 interface categoryPanelProps {
     open: boolean;
@@ -57,7 +58,14 @@ export function CategoryPanel({ open, onClose, send, onViewSession }: categoryPa
     const [batchSize, setBatchSize] = useState(5);
     const [mode, setMode] = useState<'continuous' | 'single'>('continuous');
     const [compactEvery, setCompactEvery] = useState(10);
+    const [stopAfterBatches, setStopAfterBatches] = useState(0);
     const groups = useMemo(() => groupRequirements(items), [items]);
+    const { panelRef, handleProps } = usePanelResize({
+        side: 'right',
+        cssVar: '--category-w',
+        storageKey: 'apitest:category-w',
+        min: 300,
+    });
     const running = send.status === 'starting' || send.status === 'running';
 
     const doneCount = items.filter((item) => item.classification?.status === 'done').length;
@@ -83,7 +91,7 @@ export function CategoryPanel({ open, onClose, send, onViewSession }: categoryPa
     }, [send.status, refresh]);
 
     return (
-        <aside className='category-panel' data-open={open ? 'true' : 'false'}>
+        <aside className='category-panel' data-open={open ? 'true' : 'false'} ref={panelRef}>
             <div className='category-head'>
                 <span>需求清单</span>
                 <span className='category-count'>
@@ -133,12 +141,28 @@ export function CategoryPanel({ open, onClose, send, onViewSession }: categoryPa
                     </select>
                     压缩一次
                 </label>
+                <label>
+                    跑
+                    <select
+                        value={stopAfterBatches}
+                        onChange={(event) => setStopAfterBatches(Number(event.target.value))}
+                        disabled={running}
+                    >
+                        <option value={0}>不限</option>
+                        <option value={1}>1 批</option>
+                        <option value={2}>2 批</option>
+                        <option value={3}>3 批</option>
+                        <option value={5}>5 批</option>
+                        <option value={10}>10 批</option>
+                    </select>
+                    后停止
+                </label>
                 {running ? (
                     <button className='ghost' onClick={() => void send.cancel()}>停止</button>
                 ) : (
                     <button
                         className='ghost'
-                        onClick={() => void send.send({ batchSize, mode, compactEvery })}
+                        onClick={() => void send.send({ batchSize, mode, compactEvery, stopAfterBatches })}
                         disabled={allClassified}
                     >
                         {allClassified ? '全部已分类' : mode === 'single' ? '发送下一批' : '开始连续发送'}
@@ -250,6 +274,13 @@ export function CategoryPanel({ open, onClose, send, onViewSession }: categoryPa
                     )}
                 </section>
             )}
+            <div
+                className='panel-resizer panel-resizer-left'
+                role='separator'
+                aria-orientation='vertical'
+                aria-label='拖动调整需求清单宽度'
+                {...handleProps}
+            />
         </aside>
     );
 }

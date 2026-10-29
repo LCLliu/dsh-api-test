@@ -14,7 +14,6 @@ import {
   type sendResponse,
   type sessionListItem,
   type sessionsResponse,
-  type resumeResponse,
 } from '../../shared/dsh-type.ts';
 
 /** 统一处理JSON 响应：非 2xx 一律抛 Error，优先用后端返回的中文错误。 */
@@ -142,15 +141,6 @@ export const fetchSessions = async (): Promise<sessionListItem[]> => {
   return body.items ?? [];
 }
 
-/** 返回选择的会话历史的会话的Id */
-export const resumeSession = async (sessionId: string, cwd?: string): Promise<string> => {
-  const body = await requestJson<resumeResponse>('/api/resume', '打开对话失败', post({ sessionId, ...(cwd === undefined ? {} : { cwd }) }));
-  if (body.sessionId === undefined) {
-    throw new Error('后端没有返回sessionId');
-  }
-  return body.sessionId;
-}
-
 /** 获取某个会话的一页消息 */
 export const fetchHistory = async (
   sessionId: string,
@@ -183,6 +173,7 @@ export interface startRequirementsSendResponse {
   totalBatches?: number;
   batchSize?: number;
   compactEvery?: number;
+  stopAfterBatches?: number;
   error?: string;
 }
 
@@ -203,6 +194,8 @@ export interface classificationJob {
   mode: requirementSendMode;
   batchSize: number;
   compactEvery: number;
+  /** 跑满多少批就停；0 表示不限 */
+  stopAfterBatches: number;
   totalItems: number;
   pendingItems: number;
   completedBefore: number;
@@ -216,6 +209,8 @@ export interface startRequirementsSendOptions {
   batchSize: number;
   mode: requirementSendMode;
   compactEvery: number;
+  /** 跑满多少批就停；0 表示不限，一直发到没有待处理需求 */
+  stopAfterBatches: number;
 }
 
 /** 启动分批发送：固定会话、每批 batchSize 条。 */

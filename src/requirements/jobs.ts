@@ -32,6 +32,8 @@ export interface classificationJob {
   mode: 'continuous' | 'single';
   batchSize: number;
   compactEvery: number;
+  /** 跑满多少批就停；0 表示不限，把待处理需求发完 */
+  stopAfterBatches: number;
   totalItems: number;
   pendingItems: number;
   completedBefore: number;
@@ -48,6 +50,7 @@ export interface classificationStartRequest {
   batchSize?: unknown;
   mode?: unknown;
   compactEvery?: unknown;
+  stopAfterBatches?: unknown;
 }
 
 export interface classificationStartResult {
@@ -56,6 +59,8 @@ export interface classificationStartResult {
   mode: 'continuous' | 'single';
   batchSize: number;
   compactEvery: number;
+  /** 跑满多少批就停；0 表示不限，把待处理需求发完 */
+  stopAfterBatches: number;
   totalItems: number;
   pendingItems: number;
   completedBefore: number;
@@ -310,6 +315,12 @@ export const startClassificationJob = async (
   const compactEvery = Number.isInteger(requestedCompactEvery) && requestedCompactEvery >= 0 && requestedCompactEvery <= 100
     ? requestedCompactEvery
     : 10;
+  const requestedStopAfter = typeof request.stopAfterBatches === 'number'
+    ? request.stopAfterBatches
+    : Number(request.stopAfterBatches);
+  const stopAfterBatches = Number.isInteger(requestedStopAfter) && requestedStopAfter > 0 && requestedStopAfter <= 200
+    ? requestedStopAfter
+    : 0;
 
   const loaded = await loadRequirementsForPrompt(source);
   const pending = loaded.items.filter((item) => item.classification?.status !== 'done');
@@ -317,7 +328,8 @@ export const startClassificationJob = async (
     throw new classificationJobError('所有需求都已分类', 400);
   }
 
-  const selected = mode === 'single' ? pending.slice(0, batchSize) : pending;
+  const chosen = mode === 'single' ? pending.slice(0, batchSize) : pending;
+  const selected = stopAfterBatches > 0 ? chosen.slice(0, stopAfterBatches * batchSize) : chosen;
   const sessionId = await ensureClassificationSession();
   const totalBatches = Math.ceil(selected.length / batchSize);
   const job: classificationJob = {
@@ -326,6 +338,7 @@ export const startClassificationJob = async (
     mode,
     batchSize,
     compactEvery,
+    stopAfterBatches,
     totalItems: loaded.items.length,
     pendingItems: pending.length,
     completedBefore: loaded.items.length - pending.length,
@@ -356,6 +369,7 @@ export const startClassificationJob = async (
     mode,
     batchSize,
     compactEvery,
+    stopAfterBatches,
     totalItems: job.totalItems,
     pendingItems: job.pendingItems,
     completedBefore: job.completedBefore,

@@ -889,3 +889,55 @@ a.requirement-prd:hover {
   font-size: 11px;
   color: var(--muted);
 }
+/* 侧边栏拖宽：把手贴在面板内边缘，一半探出去方便命中 */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  cursor: col-resize;
+  touch-action: none;
+  visibility: hidden;
+}
+
+/* 收起时面板平移到屏外，探出的那几像素不能再吃掉点击 */
+.history-panel[data-open='true'] .panel-resizer,
+.category-panel[data-open='true'] .panel-resizer {
+  visibility: visible;
+}
+
+.panel-resizer-right {
+  right: -4px;
+}
+
+.panel-resizer-left {
+  left: -4px;
+}
+
+.panel-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.panel-resizer:hover::after,
+.panel-resizer:active::after {
+  background: var(--green);
+}
+
+/* 拖拽期间关掉过渡和选中，宽度才跟手 */
+html[data-resizing] {
+  cursor: col-resize;
+  user-select: none;
+}
+
+html[data-resizing] .page,
+html[data-resizing] .history-panel,
+html[data-resizing] .category-panel {
+  transition: none;
+}

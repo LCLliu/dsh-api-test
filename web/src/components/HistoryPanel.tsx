@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { sessionListItem } from '../../../shared/dsh-type.ts';
 import type { sessionHistory } from '../hooks/useSessionHistory';
+import { usePanelResize } from '../hooks/usePanelResize';
 
 const relativeTime = (millis: number) => {
     const diff = Date.now() - millis;
@@ -33,6 +34,12 @@ interface historyPanelProps {
 /** 左侧抽屉：按 cwd 分组的历史会话列表，点一条就认领并接着聊。 */
 export function HistoryPanel({ open, currentSessionId, history, onClose }: historyPanelProps) {
     const [pinned, setPinned] = useState<Record<string, boolean>>({});
+    const { panelRef, handleProps } = usePanelResize({
+        side: 'left',
+        cssVar: '--history-w',
+        storageKey: 'apitest:history-w',
+        min: 220,
+    });
 
     const groups = useMemo<cwdGroup[]>(() => {
         const map = new Map<string, cwdGroup>();
@@ -56,7 +63,7 @@ export function HistoryPanel({ open, currentSessionId, history, onClose }: histo
     return (
         <>
             {/* {open && <div className='history-scrim' />} */}
-            <aside className='history-panel' data-open={open ? 'true' : 'false'}>
+            <aside className='history-panel' data-open={open ? 'true' : 'false'} ref={panelRef}>
                 <div className='history-head'>
                     <span>历史对话</span>
                     <button className='ghost' onClick={onClose}>收起</button>
@@ -110,6 +117,13 @@ export function HistoryPanel({ open, currentSessionId, history, onClose }: histo
                         );
                     })}
                 </div>
+                <div
+                    className='panel-resizer panel-resizer-right'
+                    role='separator'
+                    aria-orientation='vertical'
+                    aria-label='拖动调整历史面板宽度'
+                    {...handleProps}
+                />
             </aside>
         </>
     );

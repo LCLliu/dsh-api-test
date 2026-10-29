@@ -7,7 +7,6 @@ import {
   fetchHistory,
   fetchReply,
   loadCommands,
-  resumeSession,
   sendPrompt,
 } from '../api';
 import { clearStoredChat, readStoredChat, writeStoredChat } from '../storage';
@@ -167,9 +166,8 @@ export const useChatSession = () => {
 
   /** 打开一个已有会话（用于“查看分类会话”），加载后可以继续聊天。 */
   const openSession = async (id: string): Promise<void> => {
-    const resumed = await resumeSession(id);
-    const page = await fetchHistory(resumed, 30);
-    loadSession(resumed, page.messages);
+    const page = await fetchHistory(id, 30);
+    loadSession(id, page.messages);
   };
 
   const startSession = async (): Promise<void> => {

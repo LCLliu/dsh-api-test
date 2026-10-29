@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { chatMessage, sessionListItem } from '../../../shared/dsh-type.ts';
-import { fetchHistory, fetchSessions, resumeSession } from '../api';
+import { fetchHistory, fetchSessions } from '../api';
 
 const HISTORY_LIMIT = 30;
 
@@ -48,13 +48,12 @@ export const useSessionHistory = ({
     const switchTo = async (item: sessionListItem): Promise<void> => {
         setSwitching(item.sessionId);
         try {
-            const sessionId = await resumeSession(item.sessionId, item.cwd);
-            const page = await fetchHistory(sessionId, HISTORY_LIMIT);
-            onLoad(sessionId, page.messages);
+            const page = await fetchHistory(item.sessionId, HISTORY_LIMIT);
+            onLoad(item.sessionId, page.messages);
             setHasMore(page.hasMore);
             setOldestSeq(page.oldestSeq);
         } catch (err) {
-            // 认领失败时不要切走当前会话
+            // 历史读取失败时不要切走当前会话
             pushError(err);
         } finally {
             setSwitching(undefined);
