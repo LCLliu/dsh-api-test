@@ -5,10 +5,12 @@ import { useInteractions } from './hooks/useInteractions';
 import { useSlashMenu } from './hooks/useSlashCommands';
 import { useSessionHistory } from './hooks/useSessionHistory';
 import { HistoryPanel } from './components/HistoryPanel';
+import { CategoryPanel } from './components/CategoryPanel';
 
 export function App() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [categoryOpen, setCategoryOpen] = useState(false);
   const chat = useChatSession();
   const slash = useSlashMenu({
     sessionId: chat.sessionId,
@@ -76,7 +78,15 @@ export function App() {
         history={history}
         onClose={() => setHistoryOpen(false)}
       />
-      <main className='page' data-history={historyOpen ? 'open' : 'closed'}>
+      <CategoryPanel
+        open={categoryOpen}
+        onClose={() => setCategoryOpen(false)}
+      />
+      <main
+        className='page'
+        data-history={historyOpen ? 'open' : 'closed'}
+        data-category={categoryOpen ? 'open' : 'closed'}
+      >
         <section className={`card${chat.sessionId === '' ? '' : ' card-chat'}`}>
           <div className='topbar'>
             {!historyOpen && <button
@@ -87,6 +97,13 @@ export function App() {
               历史对话
             </button>}
             <h1 className='title'> dsh API Test</h1>
+            <button
+              className='Category'
+              aria-expanded={categoryOpen}
+              onClick={() => setCategoryOpen((value) => !value)}
+            >
+              分类需求
+            </button>
           </div>
           {
             chat.sessionId === '' ? (

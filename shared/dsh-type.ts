@@ -380,3 +380,27 @@ export interface historyResponse {
     oldestSeq?: number;
     error?: string;
 }
+
+// ============================ 需求清单 ============================
+
+/** 一条需求：来自 REQUIREMENTS_JSON_PATH 指向的 JSON*/
+export interface requirementItem {
+    /** Key 字段；缺失时用 work itemID 或 R-序号兜底 */
+    key: string;
+    /** 源 JSON 的 work item ID 字段 */
+    workItemID?: string;
+    /** summary 字段 */
+    summary: string;
+    /** prd 字段：文本、文档路径或 URL 都按原值展示 */
+    prd?: string;
+    /** 模块字段，前端按它分组 */
+    module?: string;
+    /** 后端按 work item ID（其次 Key）匹配到的 HTML 文件路径：相对 JSON 所在目录 */
+    requirement_content_path?: string;
+}
+
+/** GET /api/requirements 的响应。 */
+export interface requirementsResponse {
+    items?: requirementItem[];
+    error?: string;
+}

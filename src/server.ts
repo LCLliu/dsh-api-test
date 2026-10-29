@@ -20,6 +20,7 @@ import type {
 } from '../shared/dsh-type.js';
 import { randomUUID } from 'node:crypto';
 import { createApprovals } from './approvals.js';
+import { loadRequirements } from './requirements-classifier.js';
 import { approvalDecision } from '../shared/dsh-type.js';
 
 const DSH_URL = process.env.DSH_URL ?? 'http://127.0.0.1:3080';
@@ -486,6 +487,21 @@ app.post('/api/cancel', async (req, res) => {
   }
   try {
     res.json(await dsh.cancl(sessionId));
+  } catch (err) {
+    res.status(502).json({ error: (err as Error).message });
+  }
+});
+
+// 读取 env 指向的需求 JSON，返回归一化后的列表
+app.get('/api/requirements', async (_req, res) => {
+  const source = (process.env.REQUIREMENTS_JSON_PATH ?? process.env.REQUIREMNET_JSON_PATH ?? '').trim();
+  if (source === '') {
+    res.status(400).json({ error: '未配置 REQUIREMENTS_JSON_PATH' });
+    return;
+  }
+
+  try {
+    res.json({ items: await loadRequirements(source) });
   } catch (err) {
     res.status(502).json({ error: (err as Error).message });
   }

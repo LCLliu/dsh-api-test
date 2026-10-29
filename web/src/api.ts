@@ -9,6 +9,8 @@ import {
   type pendingQuestion,
   type questionAnswerItem,
   type replyResponse,
+  type requirementItem,
+  type requirementsResponse,
   type sendResponse,
   type sessionListItem,
   type sessionsResponse,
@@ -160,4 +162,10 @@ export const fetchHistory = async (
 
   const body = await requestJson<historyResponse>(`/api/history?${query}`, '加载历史失败');
   return { messages: body.messages ?? [], hasMore: body.hasMore === true, oldestSeq: body.oldestSeq };
+}
+
+/** 读取 env 指向的需求 JSON（后端归一化后的列表）。 */
+export const fetchRequirements = async (): Promise<requirementItem[]> => {
+  const body = await requestJson<requirementsResponse>('/api/requirements', '加载需求失败');
+  return body.items ?? [];
 }

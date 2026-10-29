@@ -1,0 +1,28 @@
+{
+  "requirements": [
+    {
+      "Key": "10001",
+      "work item ID": "REQ-001",
+      "summary": "车道保持辅助的横向控制",
+      "prd": "PRD-2026-001 / 3.2 横向控制",
+      "模块": "LKA",  
+      "requirement_content_path": "content/REQ-001.html"
+    },
+    {
+      "Key": "10002",
+      "work item ID": "REQ-002",
+      "summary": "前碰撞预警的触发条件",
+      "prd": "PRD-2026-002 / 4.1 前碰撞预警",
+      "模块": "FCW",
+      "requirement_content_path": "content/REQ-002.html"
+    },
+    {
+      "Key": "10003",
+      "work item ID": "REQ-003",
+      "summary": "OTA 升级失败回滚",
+      "prd": "PRD-2026-003 / 6.3 OTA 回滚",
+      "模块": "OTA",
+      "requirement_content_path": "content/REQ-003.html"
+    }
+  ]
+}
