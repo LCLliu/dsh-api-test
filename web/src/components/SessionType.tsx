@@ -49,10 +49,15 @@ export function SessionType({
   // 流式输出时正文在同一个气泡里变长，用最后一条的长度一起触发贴底
   const lastLength = chat.messages[chat.messages.length - 1]?.text.length ?? 0;
 
+  // 换会话就是换内容，上一份滚动位置不该带进来：打开直接落在最新一条
+  useEffect(() => {
+    stickToBottom.current = true;
+  }, [chat.sessionId]);
+
   useEffect(() => {
     const el = listRef.current;
     if (el !== null && stickToBottom.current) el.scrollTop = el.scrollHeight;
-  }, [lastLength, chat.sending]);
+  }, [lastLength, chat.sending, chat.sessionId]);
 
   return (
     <>

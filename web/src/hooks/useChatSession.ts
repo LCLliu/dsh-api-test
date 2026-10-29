@@ -202,16 +202,21 @@ export const useChatSession = () => {
     setMessages((list) => [...older, ...list]);
   }
 
-  /** 只补新增消息，并认领本地乐观气泡，避免刷新一次多出一条重复。 */
-  const refreshHistory = useCallback(async (): Promise<void> => {
-    if (sessionId === '' || streamingRef.current) return;
+  /** 拉一页最新历史并合并进当前列表；流式写入占着聊天区时让路。 */
+  const pullHistory = useCallback(async (targetSessionId: string): Promise<void> => {
+    if (targetSessionId === '' || streamingRef.current) return;
     try {
-      const page = await fetchHistory(sessionId, 30);
+      const page = await fetchHistory(targetSessionId, 30);
       setMessages((current) => mergeIncoming(current, page.messages));
     } catch {
       // 自动刷新失败不打断当前界面
     }
-  }, [sessionId]);
+  }, []);
+
+  /** 只补新增消息，并认领本地乐观气泡，避免刷新一次多出一条重复。 */
+  const refreshHistory = useCallback(async (): Promise<void> => {
+    await pullHistory(sessionId);
+  }, [pullHistory, sessionId]);
 
   /**
    * 分批分类任务在同一会话新起一轮：先开流，历史并行补进来。
@@ -279,6 +284,8 @@ export const useChatSession = () => {
 
     setSessionId(saved.sessionId);
     replaceMessages(saved.messages);
+    // 存的是上次的快照，先把它补齐到最新，否则一打开看到的是很早的内容
+    void pullHistory(saved.sessionId);
 
     if (saved.pendingRequestId === undefined) return;
 
