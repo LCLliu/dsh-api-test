@@ -201,7 +201,17 @@ export const followTurn = async (
         return;
       }
 
-      if (part.type !== 'chunk' || !attempts.has(part.attemptId)) return;
+      if (part.type !== 'chunk' || part.attemptId === undefined) return;
+
+      /**
+       * 迟到的订阅拿不到本轮 attempt 的 start 帧（follow 只补发最近一条消息的快照），
+       * chunk 会带着没登记过的 attemptId。本轮已经锚定就说明它属于本轮，直接登记；
+       * 还没锚定时维持原样，避免把排队中上一轮的输出当成本轮。
+       */
+      if (!attempts.has(part.attemptId)) {
+        if (!scan.anchored) return;
+        attempts.add(part.attemptId);
+      }
 
       const delta = asTextDelta(part.chunk);
       if (delta !== undefined && delta !== '') {

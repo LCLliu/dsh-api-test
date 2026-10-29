@@ -31,6 +31,8 @@ export const useChatSession = () => {
   const [commandsError, setCommandsError] = useState('');
 
   const streamAbort = useRef<(() => void) | undefined>(undefined);
+  /** 镜像当前消息，供流式写气泡时在更新函数外面决定落点。 */
+  const messagesRef = useRef<chatMessage[]>([]);
   /** 事件流是否占着聊天区：刷新和接别的轮次都要让路，避免半截文本被再补一条。 */
   const streamingRef = useRef(false);
   /** 从按下发送到第一轮增量到达之间的空档，同样视为忙。 */
@@ -38,11 +40,18 @@ export const useChatSession = () => {
   const commandsPromise = useRef<{ sessionId: string; promise: Promise<commandDescriptor[]> } | null>(null);
 
   const pushMessage = (role: chatMessage['role'], text: string) => {
-    setMessages((list) => [...list, { id: localMessageId(), role, text }]);
+    const id = localMessageId();
+    setMessages((list) => [...list, { id, role, text }]);
   };
 
   const pushError = (error: unknown) => {
     pushMessage('error', error instanceof Error ? error.message : String(error));
+  };
+
+  /** 整体替换消息时同步镜像，流式落点才不会读到上一份状态。 */
+  const replaceMessages = (next: chatMessage[]) => {
+    messagesRef.current = next;
+    setMessages(next);
   };
 
   /** 同一会话只发一次命令目录请求，重复调用复用同一个 promise。 */
@@ -71,20 +80,21 @@ export const useChatSession = () => {
     let buffer = '';
     let closeStream: (() => void) | undefined;
 
+    /**
+     * 落点必须在更新函数外面定：StrictMode 会把更新函数调两次，
+     * 在里面给外层 bubbleId 赋值会让可见气泡和跟踪的那条分家，打字机就卡住不动了。
+     */
     const write = (text: string) => {
-      if (bubbleId !== '') {
-        setMessages((list) => list.map((item) => (item.id === bubbleId ? { ...item, text } : item)));
-        return;
+      if (bubbleId === '') {
+        const last = messagesRef.current[messagesRef.current.length - 1];
+        bubbleId = options.adoptTrailingAssistant === true && last !== undefined && last.role === 'assistant'
+          ? last.id
+          : localMessageId();
       }
-
-      setMessages((list) => {
-        const last = list[list.length - 1];
-        const reuse = options.adoptTrailingAssistant === true && last !== undefined && last.role === 'assistant';
-        bubbleId = reuse ? last.id : localMessageId();
-        return reuse
-          ? list.map((item) => (item.id === bubbleId ? { ...item, text } : item))
-          : [...list, { id: bubbleId, role: 'assistant', text }];
-      });
+      const id = bubbleId;
+      setMessages((list) => list.some((item) => item.id === id)
+        ? list.map((item) => (item.id === id ? { ...item, text } : item))
+        : [...list, { id, role: 'assistant', text }]);
     };
 
     const stop = () => {
@@ -179,7 +189,7 @@ export const useChatSession = () => {
     streamAbort.current?.();
     commandsPromise.current = null;
     setSessionId(id);
-    setMessages(history);
+    replaceMessages(history);
     setInput('');
     setPendingRequestId(undefined);
     setSending(false);
@@ -204,24 +214,23 @@ export const useChatSession = () => {
   }, [sessionId]);
 
   /**
-   * 分批分类任务在同一会话新起一轮：先补拉历史，让这轮的 prompt 立刻出现在会话里，
-   * 再接这一轮的流做打字机输出。聊天区自己正忙时直接让路。
+   * 分批分类任务在同一会话新起一轮：先开流，历史并行补进来。
+   * 顺序不能反——等历史拉完再订阅，开头那段增量就错过了。
+   * 聊天区自己正忙时直接让路。
    */
   const followBatch = useCallback(async (
     targetSessionId: string,
     requestId: string,
   ): Promise<void> => {
     if (targetSessionId === '' || streamingRef.current || busyRef.current) return;
-    await refreshHistory();
-    if (busyRef.current || streamingRef.current) return;
-    // 这一轮不是聊天区自己发的，不锁输入；用 streaming 让历史刷新在接流期间让路
-    setStreaming(true);
-    try {
-      await streamTurn(targetSessionId, requestId, { timeoutMs: BATCH_FOLLOW_TIMEOUT_MS });
-    } finally {
-      setStreaming(false);
-    }
-  }, [refreshHistory]);
+
+    const history = fetchHistory(targetSessionId, 30).catch(() => undefined);
+    const turn = streamTurn(targetSessionId, requestId, { timeoutMs: BATCH_FOLLOW_TIMEOUT_MS });
+
+    const page = await history;
+    if (page !== undefined) setMessages((current) => mergeIncoming(current, page.messages));
+    await turn;
+  }, []);
 
   /** 打开一个已有会话（用于“查看分类会话”），加载后可以继续聊天。 */
   const openSession = async (id: string): Promise<void> => {
@@ -238,7 +247,7 @@ export const useChatSession = () => {
     clearStoredChat();
     commandsPromise.current = null;
     setSessionId('');
-    setMessages([]);
+    replaceMessages([]);
     setInput('');
     setPendingRequestId(undefined);
     setSending(false);
@@ -269,7 +278,7 @@ export const useChatSession = () => {
     if (saved === undefined) return;
 
     setSessionId(saved.sessionId);
-    setMessages(saved.messages);
+    replaceMessages(saved.messages);
 
     if (saved.pendingRequestId === undefined) return;
 
@@ -280,6 +289,11 @@ export const useChatSession = () => {
       setSending(false);
     });
   }, []);
+
+  // 追加/合并后同步镜像，供流式写入决定落点
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   useEffect(() => {
     if (sessionId === '') return;
