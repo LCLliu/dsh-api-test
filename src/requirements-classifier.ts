@@ -301,7 +301,7 @@ export const buildRequirementsPrompt = async (source: string): Promise<requireme
   return {
     prompt: loaded.items.length === 0
       ? '以下是需求条目及其原文：\n\n（无需求）'
-      : ['以下是需求条目及其原文：', ...loaded.items.map(renderPromptItem)].join('\n\n'),
+      : ['你是一位资深的车机工程师，我需要你根据以下内容以及（skill）来对于需求条目进行分类','以下是需求条目及其原文：', ...loaded.items.map(renderPromptItem)].join('\n\n'),
     count: loaded.items.length,
     missingContent: loaded.missingContent,
   };
