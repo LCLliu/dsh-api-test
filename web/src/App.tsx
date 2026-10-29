@@ -1,7 +1,8 @@
-import { useRef, type KeyboardEvent, useState } from 'react';
+import { useEffect, useRef, type KeyboardEvent, useState } from 'react';
 import { SessionType } from './components/SessionType';
 import { useChatSession } from './hooks/useChatSession';
 import { useInteractions } from './hooks/useInteractions';
+import { useRequirementSend } from './hooks/useRequirementSend';
 import { useSlashMenu } from './hooks/useSlashCommands';
 import { useSessionHistory } from './hooks/useSessionHistory';
 import { HistoryPanel } from './components/HistoryPanel';
@@ -20,6 +21,32 @@ export function App() {
     onPick: (command) => chat.setInput(`/${command.name} `),
   });
   const popups = useInteractions({ sessionId: chat.sessionId, pushError: chat.pushError });
+  const requirementSend = useRequirementSend();
+
+  const classificationSessionId = requirementSend.sessionId || requirementSend.job?.sessionId || '';
+  const completedBatches = requirementSend.job?.batches.filter((batch) => batch.status === 'done').length ?? 0;
+
+  // 分类会话正好是当前聊天时，每批完成/任务结束都补拉一次历史
+  useEffect(() => {
+    if (classificationSessionId === '' || chat.sessionId !== classificationSessionId) return;
+    if (requirementSend.status === 'idle' || requirementSend.status === 'starting') return;
+    void chat.refreshHistory();
+  }, [
+    classificationSessionId,
+    completedBatches,
+    requirementSend.status,
+    chat.sessionId,
+    chat.refreshHistory,
+  ]);
+
+  const openClassificationSession = async (sessionId: string) => {
+    try {
+      await chat.openSession(sessionId);
+      setCategoryOpen(false);
+    } catch (error) {
+      chat.pushError(error);
+    }
+  };
 
   const history = useSessionHistory({
     open: historyOpen,
@@ -81,6 +108,8 @@ export function App() {
       <CategoryPanel
         open={categoryOpen}
         onClose={() => setCategoryOpen(false)}
+        send={requirementSend}
+        onViewSession={openClassificationSession}
       />
       <main
         className='page'

@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { chatMessage, commandDescriptor } from '../../../shared/dsh-type.ts';
 import {
   cancelTurn,
   createSession,
   executeCommand,
+  fetchHistory,
   fetchReply,
   loadCommands,
+  resumeSession,
   sendPrompt,
 } from '../api';
 import { clearStoredChat, readStoredChat, writeStoredChat } from '../storage';
@@ -148,6 +150,28 @@ export const useChatSession = () => {
     setMessages((list) => [...older, ...list]);
   }
 
+  /** 只补新增消息，避免覆盖已经加载的更早历史。 */
+  const refreshHistory = useCallback(async (): Promise<void> => {
+    if (sessionId === '') return;
+    try {
+      const page = await fetchHistory(sessionId, 30);
+      setMessages((current) => {
+        const seen = new Set(current.map((message) => message.id));
+        const incoming = page.messages.filter((message) => !seen.has(message.id));
+        return incoming.length === 0 ? current : [...current, ...incoming];
+      });
+    } catch {
+      // 自动刷新失败不打断当前界面
+    }
+  }, [sessionId]);
+
+  /** 打开一个已有会话（用于“查看分类会话”），加载后可以继续聊天。 */
+  const openSession = async (id: string): Promise<void> => {
+    const resumed = await resumeSession(id);
+    const page = await fetchHistory(resumed, 30);
+    loadSession(resumed, page.messages);
+  };
+
   const startSession = async (): Promise<void> => {
     setSessionId(await createSession());
   };
@@ -231,6 +255,8 @@ export const useChatSession = () => {
     reset,
     loadSession,
     prependMessages,
+    refreshHistory,
+    openSession,
   };
 };
 

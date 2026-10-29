@@ -383,6 +383,19 @@ export interface historyResponse {
 
 // ============================ 需求清单 ============================
 
+/** 需求的分批分类进度；写回 requirements.json 的 classification 字段。 */
+export interface requirementClassification {
+    /** running=已发送等待回复；done=已分类；error=失败或取消，下次会重试 */
+    status?: 'running' | 'done' | 'error';
+    /** 第几批（本次任务内序号） */
+    batch?: number;
+    requestId?: string;
+    sessionId?: string;
+    reason?: string;
+    error?: string;
+    classifiedAt?: number;
+}
+
 /** 一条需求：来自 REQUIREMENTS_JSON_PATH 指向的 JSON*/
 export interface requirementItem {
     /** Key 字段；缺失时用 work itemID 或 R-序号兜底 */
@@ -397,6 +410,8 @@ export interface requirementItem {
     module?: string;
     /** 后端按 work item ID（其次 Key）匹配到的 HTML 文件路径：相对 JSON 所在目录 */
     requirement_content_path?: string;
+    /** 分类进度；缺省表示还没分类过 */
+    classification?: requirementClassification;
 }
 
 /** GET /api/requirements 的响应。 */

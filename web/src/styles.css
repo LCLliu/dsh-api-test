@@ -682,9 +682,86 @@ body {
   margin-left: auto;
 }
 
+.category-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.category-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.category-controls select {
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: #0b1118;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.category-progress {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--green);
+}
+
 .category-note {
   font-size: 12px;
   color: var(--muted);
+}
+
+.category-send {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.category-send-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: .04em;
+}
+
+.category-send-session {
+  max-width: 65%;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-reply {
+  max-height: min(34vh, 320px);
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0b1118;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+  white-space: pre-wrap;
 }
 
 .category-list {
@@ -748,6 +825,29 @@ body {
   padding: 1px 6px;
   border: 1px solid var(--line);
   border-radius: 999px;
+}
+
+.requirement-status {
+  margin-left: auto;
+}
+
+.requirement-status-done {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, var(--line));
+}
+
+.requirement-status-running {
+  color: #fbbf24;
+  border-color: color-mix(in srgb, #fbbf24 45%, var(--line));
+}
+
+.requirement-status-error {
+  color: #f87171;
+  border-color: color-mix(in srgb, #f87171 45%, var(--line));
+}
+
+.requirement-status-pending {
+  color: var(--muted);
 }
 
 .requirement-title {

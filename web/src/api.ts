@@ -169,3 +169,83 @@ export const fetchRequirements = async (): Promise<requirementItem[]> => {
   const body = await requestJson<requirementsResponse>('/api/requirements', '加载需求失败');
   return body.items ?? [];
 }
+
+/** POST /api/requirements/send 的响应：分批任务已启动。 */
+export type requirementSendMode = 'continuous' | 'single';
+
+export interface startRequirementsSendResponse {
+  jobId?: string;
+  sessionId?: string;
+  mode?: requirementSendMode;
+  totalItems?: number;
+  pendingItems?: number;
+  completedBefore?: number;
+  totalBatches?: number;
+  batchSize?: number;
+  compactEvery?: number;
+  error?: string;
+}
+
+export interface classificationBatchProgress {
+  index: number;
+  offset: number;
+  count: number;
+  status: 'pending' | 'running' | 'done' | 'error';
+  requestId?: string;
+  text?: string;
+  reason?: string;
+  error?: string;
+}
+
+export interface classificationJob {
+  id: string;
+  sessionId: string;
+  mode: requirementSendMode;
+  batchSize: number;
+  compactEvery: number;
+  totalItems: number;
+  pendingItems: number;
+  completedBefore: number;
+  totalBatches: number;
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  error?: string;
+  batches: classificationBatchProgress[];
+}
+
+export interface startRequirementsSendOptions {
+  batchSize: number;
+  mode: requirementSendMode;
+  compactEvery: number;
+}
+
+/** 启动分批发送：固定会话、每批 batchSize 条。 */
+export const startRequirementsSend = async (
+  options: startRequirementsSendOptions,
+): Promise<startRequirementsSendResponse> => {
+  const body = await requestJson<startRequirementsSendResponse>(
+    '/api/requirements/send',
+    '启动分批发送失败',
+    post(options),
+  );
+  if (body.jobId === undefined || body.sessionId === undefined) {
+    throw new Error('后端没有返回 jobId/sessionId');
+  }
+  return body;
+};
+
+/** 查询分批任务进度。 */
+export const fetchClassificationJob = async (jobId: string): Promise<classificationJob> =>
+  requestJson<classificationJob>(
+    `/api/requirements/send/${encodeURIComponent(jobId)}`,
+    '查询发送进度失败',
+  );
+
+/** 停止分批任务。 */
+export const cancelClassificationJob = async (
+  jobId: string,
+): Promise<{ accepted?: true; status?: string; error?: string }> =>
+  requestJson(
+    `/api/requirements/send/${encodeURIComponent(jobId)}/cancel`,
+    '取消发送失败',
+    post({}),
+  );

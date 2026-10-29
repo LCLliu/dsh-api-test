@@ -1,6 +1,6 @@
 import { readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { requirementItem } from '../shared/dsh-type.js';
+import type { requirementClassification, requirementItem } from '../shared/dsh-type.js';
 
 const CONTENT_DIR = 'content';
 
@@ -86,6 +86,9 @@ const toRequirement = (
   const prd = readPrd(row);
   const moduleName = readModule(row);
   const contentPath = matchContentPath(htmlIndex, key, workItemID);
+  const classification = isRecord(row.classification)
+    ? row.classification as requirementClassification
+    : undefined;
 
   return {
     key,
@@ -94,6 +97,7 @@ const toRequirement = (
     ...(prd === undefined ? {} : { prd }),
     ...(moduleName === undefined ? {} : { module: moduleName }),
     ...(contentPath === undefined ? {} : { requirement_content_path: contentPath }),
+    ...(classification === undefined ? {} : { classification }),
   };
 };
 
@@ -109,8 +113,69 @@ const writeRequirements = async (file: string, data: unknown): Promise<void> => 
   }
 };
 
-/** 读取 env 指向的需求 JSON，扫描 content 下的 HTML，并把匹配结果回写 JSON。 */
-export const loadRequirements = async (source: string): Promise<requirementItem[]> => {
+export interface classificationUpdate {
+  workItemID: string;
+  classification: requirementClassification;
+}
+
+export interface classificationBatchRecord {
+  batch: number;
+  requestId: string;
+  sessionId: string;
+  status: 'running' | 'done' | 'error';
+  text?: string;
+  reason?: string;
+  error?: string;
+  itemIds: string[];
+  startedAt: number;
+  endedAt?: number;
+}
+
+/** 把一批的分类状态和回复写回 requirements.json，保留其他字段。 */
+export const persistClassification = async (
+  source: string,
+  updates: classificationUpdate[],
+  batchRecord: classificationBatchRecord,
+): Promise<void> => {
+  const file = path.resolve(source);
+
+  let data: unknown;
+  try {
+    data = JSON.parse((await readFile(file, 'utf-8')).replace(/^\uFEFF/, ''));
+  } catch {
+    throw new Error(`读取需求 JSON 失败：${file}`);
+  }
+
+  const rows = pickRows(data);
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const row of rows) {
+    if (!isRecord(row)) continue;
+    const id = readWorkItemID(row) ?? readKey(row);
+    if (id !== undefined) byId.set(id, row);
+  }
+
+  for (const update of updates) {
+    const row = byId.get(update.workItemID);
+    if (row !== undefined) row.classification = update.classification;
+  }
+
+  if (isRecord(data)) {
+    const existing = Array.isArray(data.classification_batches)
+      ? data.classification_batches
+      : [];
+    const index = existing.findIndex(
+      (entry) => isRecord(entry) && entry.requestId === batchRecord.requestId,
+    );
+    if (index >= 0) existing[index] = batchRecord;
+    else existing.push(batchRecord);
+    data.classification_batches = existing;
+  }
+
+  await writeRequirements(file, data);
+};
+
+/** 读取 env 指向的需求 JSON，扫描 content 下的 HTML；persist=false 时不回写。 */
+export const loadRequirements = async (source: string, persist = true): Promise<requirementItem[]> => {
   const file = path.resolve(source);
   const root = path.dirname(file);
 
@@ -146,6 +211,125 @@ export const loadRequirements = async (source: string): Promise<requirementItem[
     }
   });
 
-  if (changed) await writeRequirements(file, data);
+  if (changed && persist) await writeRequirements(file, data);
   return items;
+};
+
+/** 简单 HTML 转纯文本，够用于把需求原文拼进提示词。 */
+const htmlToText = (html: string): string => html
+  .replace(/<head[\s\S]*?<\/head>/gi, '')
+  .replace(/<script[\s\S]*?<\/script>/gi, '')
+  .replace(/<style[\s\S]*?<\/style>/gi, '')
+  .replace(/<!--[\s\S]*?-->/g, '')
+  .replace(/<br\s*\/?>/gi, '\n')
+  .replace(/<\/(p|div|li|h[1-6]|tr|section|article)>/gi, '\n')
+  .replace(/<li[^>]*>/gi, '- ')
+  .replace(/<[^>]+>/g, '')
+  .replace(/&nbsp;/gi, ' ')
+  .replace(/&lt;/gi, '<')
+  .replace(/&gt;/gi, '>')
+  .replace(/&quot;/gi, '"')
+  .replace(/&#39;/g, "'")
+  .replace(/&amp;/gi, '&')
+  .replace(/\r\n/g, '\n')
+  .replace(/^[ \t]+/gm, '')
+  .replace(/[ \t]+\n/g, '\n')
+  .replace(/\n{3,}/g, '\n\n')
+  .trim();
+
+const readRequirementText = async (root: string, contentPath: string): Promise<string | undefined> => {
+  try {
+    const target = path.resolve(root, contentPath);
+    if (target !== root && !target.startsWith(root + path.sep)) return undefined;
+    return htmlToText(await readFile(target, 'utf-8'));
+  } catch {
+    return undefined;
+  }
+};
+
+export interface promptRequirement extends requirementItem {
+  /** 从 requirement_content_path 读到的纯文本；缺失时表示没找到原文 */
+  originalText?: string;
+}
+
+export interface requirementsPromptSource {
+  items: promptRequirement[];
+  missingContent: string[];
+}
+
+/** 一次性读取全部需求条目和原文，供预览或分批任务复用。 */
+export const loadRequirementsForPrompt = async (source: string): Promise<requirementsPromptSource> => {
+  const root = path.dirname(path.resolve(source));
+  const items = await loadRequirements(source, false);
+  const missingContent: string[] = [];
+  const withText: promptRequirement[] = [];
+
+  for (const item of items) {
+    const text = item.requirement_content_path === undefined
+      ? undefined
+      : await readRequirementText(root, item.requirement_content_path);
+    if (text === undefined) missingContent.push(item.workItemID ?? item.key);
+    withText.push({ ...item, ...(text === undefined ? {} : { originalText: text }) });
+  }
+
+  return { items: withText, missingContent };
+};
+
+const renderPromptItem = (item: promptRequirement, index: number): string => {
+  const lines = [
+    `## ${index + 1}. ${item.workItemID ?? item.key}`,
+    '',
+    `- Key: ${item.key}`,
+    `- work item ID: ${item.workItemID ?? ''}`,
+    `- summary: ${item.summary}`,
+  ];
+  if (item.prd !== undefined) lines.push(`- prd: ${item.prd}`);
+  if (item.module !== undefined) lines.push(`- 模块: ${item.module}`);
+  lines.push('', '原文：', item.originalText ?? '（未找到原文）');
+  return lines.join('\n');
+};
+
+export interface requirementsPrompt {
+  prompt: string;
+  count: number;
+  missingContent: string[];
+}
+
+/** 全量预览：把所有需求拼成一段提示词。 */
+export const buildRequirementsPrompt = async (source: string): Promise<requirementsPrompt> => {
+  const loaded = await loadRequirementsForPrompt(source);
+  return {
+    prompt: loaded.items.length === 0
+      ? '以下是需求条目及其原文：\n\n（无需求）'
+      : ['以下是需求条目及其原文：', ...loaded.items.map(renderPromptItem)].join('\n\n'),
+    count: loaded.items.length,
+    missingContent: loaded.missingContent,
+  };
+};
+
+export interface requirementsPromptBatch {
+  prompt: string;
+  count: number;
+  offset: number;
+  missingContent: string[];
+}
+
+/** 按 offset/limit 切一批需求，拼成带批次说明的提示词。 */
+export const buildRequirementsPromptBatch = (
+  items: promptRequirement[],
+  offset: number,
+  limit: number,
+  batchIndex: number,
+  batchTotal: number,
+): requirementsPromptBatch => {
+  const slice = items.slice(offset, offset + limit);
+  const header = `以下是需求条目及其原文（第 ${batchIndex}/${batchTotal} 批，本批 ${slice.length} 条，总 ${items.length} 条）：`;
+  return {
+    prompt: [header, ...slice.map((item, index) => renderPromptItem(item, offset + index))].join('\n\n'),
+    count: slice.length,
+    offset,
+    missingContent: slice
+      .filter((item) => item.originalText === undefined)
+      .map((item) => item.workItemID ?? item.key),
+  };
 };
