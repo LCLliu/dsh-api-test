@@ -1,4 +1,5 @@
 import {
+  type activeTurnResponse,
   type historyResponse,
   type approvalDecision,
   type approvalRequest,
@@ -171,6 +172,13 @@ export const fetchSessions = async (): Promise<sessionListItem[]> => {
   return body.items ?? [];
 }
 
+/** 查会话当前有没有正在跑的一轮；有 requestId 就能接它的流。 */
+export const fetchActiveTurn = async (sessionId: string): Promise<activeTurnResponse> =>
+  requestJson<activeTurnResponse>(
+    `/api/session/active?sessionId=${encodeURIComponent(sessionId)}`,
+    '查询会话状态失败',
+  );
+
 /** 获取某个会话的一页消息 */
 export const fetchHistory = async (
   sessionId: string,
@@ -213,7 +221,9 @@ export interface classificationBatchProgress {
   count: number;
   status: 'pending' | 'running' | 'done' | 'error';
   requestId?: string;
+  moduleRequestId?: string;
   text?: string;
+  moduleText?: string;
   reason?: string;
   error?: string;
 }

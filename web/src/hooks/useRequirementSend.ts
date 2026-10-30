@@ -9,7 +9,8 @@ import {
 
 export type requirementSendStatus = 'idle' | 'starting' | 'running' | 'done' | 'error' | 'cancelled';
 
-const POLL_MS = 1500;
+// 阶段二可能只跑一两秒，轮询太慢会错过 moduleRequestId 的接流窗口
+const POLL_MS = 500;
 
 /** 启动固定会话的分批发送任务，并轮询批次进度。 */
 export const useRequirementSend = () => {

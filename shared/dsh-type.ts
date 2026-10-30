@@ -363,6 +363,15 @@ export interface sessionsResponse {
     error?: string;
 }
 
+/** GET /api/session/active 的响应：当前是否有一轮在跑，以及这轮的 requestId。 */
+export interface activeTurnResponse {
+    /** 是否已经 turn/start 且还没 turn/end */
+    running: boolean;
+    /** 本轮 requestId；排队中尚未开始、或旧日志缺 rpcId 时可能没有 */
+    requestId?: string;
+    error?: string;
+}
+
 /** GET /api/history 的一页历史消息（升序） */
 export interface historyResponse {
     sessionId?: string;

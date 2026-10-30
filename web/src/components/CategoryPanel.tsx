@@ -78,6 +78,13 @@ export function CategoryPanel({ open, onClose, send, onViewSession }: categoryPa
         .filter((batch) => batch.status === 'done')
         .reduce((sum, batch) => sum + batch.count, 0) ?? 0);
     const runningBatch = job?.batches.find((batch) => batch.status === 'running');
+    // 阶段二一挂上 moduleRequestId 就切到模块分类的实时文本
+    const liveStage = runningBatch?.moduleRequestId === undefined ? 'intent' : 'module';
+    const liveText = runningBatch === undefined
+        ? ''
+        : liveStage === 'module'
+            ? runningBatch.moduleText ?? ''
+            : runningBatch.text ?? '';
     const latestReply = job === null || job === undefined
         ? undefined
         : [...job.batches].reverse().find((batch) => batch.status === 'done' && batch.text !== undefined);
@@ -261,7 +268,20 @@ export function CategoryPanel({ open, onClose, send, onViewSession }: categoryPa
                     {send.error !== '' && <p className='category-note'>发送失败：{send.error}</p>}
                     {job?.error !== undefined && <p className='category-note'>任务错误：{job.error}</p>}
 
-                    {latestReply?.text !== undefined && (
+                    {running && runningBatch !== undefined && (
+                        <>
+                            <div className='category-send-head'>
+                                <span>
+                                    第 {runningBatch.index} 批 · {liveStage === 'module' ? '模块分类' : '意图识别'}实时回复
+                                </span>
+                            </div>
+                            <pre className='category-reply'>
+                                {liveText !== '' ? liveText : '等待回复…'}
+                            </pre>
+                        </>
+                    )}
+
+                    {!running && latestReply?.text !== undefined && (
                         <>
                             <div className='category-send-head'>
                                 <span>第 {latestReply.index} 批回复</span>

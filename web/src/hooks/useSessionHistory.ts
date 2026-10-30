@@ -46,6 +46,9 @@ export const useSessionHistory = ({
     }, [open, refresh]);
 
     const switchTo = async (item: sessionListItem): Promise<void> => {
+        // 点当前会话不重载：重载会断掉正在进行的流，再从头订阅反而闪烁
+        if (item.sessionId === currentSessionId) return;
+
         setSwitching(item.sessionId);
         try {
             const page = await fetchHistory(item.sessionId, HISTORY_LIMIT);

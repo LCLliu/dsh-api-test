@@ -26,26 +26,23 @@ export function App() {
   const classificationSessionId = requirementSend.sessionId || requirementSend.job?.sessionId || '';
   const completedBatches = requirementSend.job?.batches.filter((batch) => batch.status === 'done').length ?? 0;
   const runningBatch = requirementSend.job?.batches.find((batch) => batch.status === 'running');
-  const runningRequestId = runningBatch?.requestId;
-  const followedRequestId = useRef('');
+  // 阶段一跑完、阶段二接上时 requestId 会换成 moduleRequestId；两个阶段都要接流
+  const activeStageRequestId = runningBatch?.moduleRequestId ?? runningBatch?.requestId;
 
   // 分类会话就是当前聊天时：批次一开跑就把 prompt 补进会话并接上这轮的流，不等它结束
   useEffect(() => {
     if (classificationSessionId === '' || chat.sessionId !== classificationSessionId) return;
-    if (requirementSend.status !== 'running' || runningRequestId === undefined) return;
+    if (requirementSend.status !== 'running' || activeStageRequestId === undefined) return;
 
-    // 同一个批次只接一次；切进/切出这个会话会换 key，重新接上正在跑的那轮
-    const followKey = `${chat.sessionId}:${runningRequestId}`;
-    if (followedRequestId.current === followKey) return;
-
-    followedRequestId.current = followKey;
-    void chat.followBatch(classificationSessionId, runningRequestId);
+    // followBatch 内部按“会话+requestId”去重；job 每 0.5 秒换新对象，忙时会在下一轮重试
+    chat.followBatch(classificationSessionId, activeStageRequestId);
   }, [
     classificationSessionId,
     chat.sessionId,
     chat.followBatch,
     requirementSend.status,
-    runningRequestId,
+    activeStageRequestId,
+    requirementSend.job,
   ]);
 
   // 每批完成/任务结束再补拉一次，把这轮定稿文本和命令消息带回来

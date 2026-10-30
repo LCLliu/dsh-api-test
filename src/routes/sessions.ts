@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { findActiveTurn } from '../dsh/active.js';
 import { dsh } from '../dsh/client.js';
 import { collectHistory, toListItem } from '../sessions/history.js';
 
@@ -16,6 +17,22 @@ export const createSessionsRouter = (): Router => {
       res.json({ items });
     } catch (err) {
       res.status(502).json({ error: (err as Error).message });
+    }
+  });
+
+  /** 打开会话时查一下有没有正在跑的一轮，前端拿到 requestId 就能接上流。 */
+  router.get('/session/active', async (req, res) => {
+    const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : '';
+    if (!sessionId) {
+      res.status(400).json({ error: 'sessionId 必填' });
+      return;
+    }
+
+    try {
+      res.json(await findActiveTurn(sessionId));
+    } catch (err) {
+      const message = (err as Error).message;
+      res.status(message.includes('不存在') ? 404 : 502).json({ error: message });
     }
   });
 

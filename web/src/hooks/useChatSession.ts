@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { chatMessage, commandDescriptor } from '../../../shared/dsh-type.ts';
+import type { activeTurnResponse, chatMessage, commandDescriptor } from '../../../shared/dsh-type.ts';
 import {
   cancelTurn,
   createSession,
   executeCommand,
+  fetchActiveTurn,
   fetchHistory,
   loadCommands,
   sendPrompt,
@@ -37,6 +38,14 @@ export const useChatSession = () => {
   const streamingRef = useRef(false);
   /** 从按下发送到第一轮增量到达之间的空档，同样视为忙。 */
   const busyRef = useRef(false);
+  /** 当前会话 id 的同步镜像，供异步接流回来时判断用户是否已经切走。 */
+  const sessionIdRef = useRef('');
+  /** 正在跟随的轮次；重复的打开/切阶段调用靠它去重。 */
+  const activeFollow = useRef<{ sessionId: string; requestId: string } | undefined>(undefined);
+  /** 已经正常收尾的轮次；任务轮询在状态翻成 done 前重复触发时不再补一条重复气泡。 */
+  const finishedFollows = useRef(new Set<string>());
+  /** 每次开流递增；旧流收尾时不能把新流的 streaming 状态清掉。 */
+  const streamGeneration = useRef(0);
   const commandsPromise = useRef<{ sessionId: string; promise: Promise<commandDescriptor[]> } | null>(null);
 
   const pushMessage = (role: chatMessage['role'], text: string) => {
@@ -53,6 +62,19 @@ export const useChatSession = () => {
     messagesRef.current = next;
     setMessages(next);
   };
+
+  /** 拉一页最新历史并合并进当前列表；流式写入或已经切走时让路。 */
+  const pullHistory = useCallback(async (targetSessionId: string): Promise<void> => {
+    if (targetSessionId === '' || streamingRef.current) return;
+    if (sessionIdRef.current !== targetSessionId) return;
+    try {
+      const page = await fetchHistory(targetSessionId, 30);
+      if (sessionIdRef.current !== targetSessionId) return;
+      setMessages((current) => mergeIncoming(current, page.messages));
+    } catch {
+      // 自动刷新失败不打断当前界面
+    }
+  }, []);
 
   /** 同一会话只发一次命令目录请求，重复调用复用同一个 promise。 */
   const ensureCommands = (): Promise<commandDescriptor[]> => {
@@ -76,9 +98,13 @@ export const useChatSession = () => {
     requestId: string,
     options: { adoptTrailingAssistant?: boolean; timeoutMs?: number } = {},
   ): Promise<void> => new Promise((resolve) => {
+    const generation = ++streamGeneration.current;
+    const followKey = `${targetSessionId}:${requestId}`;
     let bubbleId = '';
     let buffer = '';
     let closeStream: (() => void) | undefined;
+
+    activeFollow.current = { sessionId: targetSessionId, requestId };
 
     /**
      * 落点必须在更新函数外面定：StrictMode 会把更新函数调两次，
@@ -98,9 +124,16 @@ export const useChatSession = () => {
     };
 
     const stop = () => {
-      streamAbort.current = undefined;
-      streamingRef.current = false;
-      setStreaming(false);
+      // 旧流收尾时可能已经有新流在跑，不能把新流的占位和状态清掉
+      if (generation === streamGeneration.current) {
+        streamAbort.current = undefined;
+        streamingRef.current = false;
+        setStreaming(false);
+        if (activeFollow.current?.sessionId === targetSessionId
+          && activeFollow.current.requestId === requestId) {
+          activeFollow.current = undefined;
+        }
+      }
       resolve();
     };
 
@@ -119,6 +152,7 @@ export const useChatSession = () => {
       onDone: (result) => {
         const text = result.text.trim();
         write(text !== '' ? text : (buffer !== '' ? buffer : `本轮没有文本回复，结束原因：${result.reason}`));
+        finishedFollows.current.add(followKey);
         stop();
       },
       onError: (message) => {
@@ -128,6 +162,79 @@ export const useChatSession = () => {
       },
     }, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
   });
+
+  /**
+   * 接一轮已经在跑的回复：同一轮只接一次，聊天区正忙时让路。
+   * refreshHistory 先补进缺席期间的消息，refreshAfter 在收尾时再合并定稿。
+   */
+  const beginFollow = useCallback((
+    targetSessionId: string,
+    requestId: string,
+    options: {
+      adoptTrailingAssistant?: boolean;
+      timeoutMs?: number;
+      refreshHistory?: boolean;
+      refreshAfter?: boolean;
+    } = {},
+  ): boolean => {
+    if (targetSessionId === '' || requestId === '') return false;
+    if (sessionIdRef.current !== targetSessionId) return false;
+    if (activeFollow.current?.sessionId === targetSessionId
+      && activeFollow.current.requestId === requestId) return true;
+    if (finishedFollows.current.has(`${targetSessionId}:${requestId}`)) return false;
+    if (streamingRef.current || busyRef.current) return false;
+
+    if (options.refreshHistory === true) {
+      void fetchHistory(targetSessionId, 30).then(
+        (page) => {
+          if (sessionIdRef.current !== targetSessionId) return;
+          setMessages((current) => mergeIncoming(current, page.messages));
+        },
+        () => undefined,
+      );
+    }
+
+    void streamTurn(targetSessionId, requestId, {
+      ...(options.adoptTrailingAssistant === true ? { adoptTrailingAssistant: true } : {}),
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    }).finally(() => {
+      if (options.refreshAfter === true) void pullHistory(targetSessionId);
+    });
+
+    return true;
+  }, [pullHistory]);
+
+  /**
+   * 打开会话后查一下有没有正在跑的一轮，有就直接接上。
+   * 刚收到 prompt、turn/start 还没落盘时会有短暂空档，所以 running 但没 requestId 时重试几次。
+   */
+  const attachActive = useCallback(async (
+    targetSessionId: string,
+    options: { adoptTrailingAssistant?: boolean } = {},
+  ): Promise<boolean> => {
+    if (targetSessionId === '' || targetSessionId !== sessionIdRef.current) return false;
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      let active: activeTurnResponse;
+      try {
+        active = await fetchActiveTurn(targetSessionId);
+      } catch {
+        return false;
+      }
+      if (targetSessionId !== sessionIdRef.current) return false;
+
+      if (active.requestId !== undefined) {
+        return beginFollow(targetSessionId, active.requestId, {
+          ...(options.adoptTrailingAssistant === true ? { adoptTrailingAssistant: true } : {}),
+          refreshHistory: true,
+          refreshAfter: true,
+        });
+      }
+      if (active.running !== true) return false;
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+    return false;
+  }, [beginFollow]);
 
   /** 提交输入：命中已知斜杠命令走 commands/execute，否则作为普通消息发送并接流式回复。 */
   const submit = async (): Promise<void> => {
@@ -187,6 +294,7 @@ export const useChatSession = () => {
    */
   const loadSession = (id: string, history: chatMessage[]) => {
     streamAbort.current?.();
+    sessionIdRef.current = id;
     commandsPromise.current = null;
     setSessionId(id);
     replaceMessages(history);
@@ -195,6 +303,9 @@ export const useChatSession = () => {
     setSending(false);
     setCommands([]);
     setCommandsStatus('idle');
+
+    // 历史会话也可能有一轮正在跑（别的页面发的、或刚切走的），打开就接上
+    void attachActive(id);
   };
 
   /** 加载改造的页面信息 */
@@ -202,53 +313,40 @@ export const useChatSession = () => {
     setMessages((list) => [...older, ...list]);
   }
 
-  /** 拉一页最新历史并合并进当前列表；流式写入占着聊天区时让路。 */
-  const pullHistory = useCallback(async (targetSessionId: string): Promise<void> => {
-    if (targetSessionId === '' || streamingRef.current) return;
-    try {
-      const page = await fetchHistory(targetSessionId, 30);
-      setMessages((current) => mergeIncoming(current, page.messages));
-    } catch {
-      // 自动刷新失败不打断当前界面
-    }
-  }, []);
-
   /** 只补新增消息，并认领本地乐观气泡，避免刷新一次多出一条重复。 */
   const refreshHistory = useCallback(async (): Promise<void> => {
     await pullHistory(sessionId);
   }, [pullHistory, sessionId]);
 
-  /**
-   * 分批分类任务在同一会话新起一轮：先开流，历史并行补进来。
-   * 顺序不能反——等历史拉完再订阅，开头那段增量就错过了。
-   * 聊天区自己正忙时直接让路。
-   */
-  const followBatch = useCallback(async (
-    targetSessionId: string,
-    requestId: string,
-  ): Promise<void> => {
-    if (targetSessionId === '' || streamingRef.current || busyRef.current) return;
-
-    const history = fetchHistory(targetSessionId, 30).catch(() => undefined);
-    const turn = streamTurn(targetSessionId, requestId, { timeoutMs: BATCH_FOLLOW_TIMEOUT_MS });
-
-    const page = await history;
-    if (page !== undefined) setMessages((current) => mergeIncoming(current, page.messages));
-    await turn;
-  }, []);
+  /** 分类任务的某一阶段起跑后接上它；同一阶段重复调用由 beginFollow 去重。 */
+  const followBatch = useCallback((targetSessionId: string, requestId: string): boolean =>
+    beginFollow(targetSessionId, requestId, {
+      timeoutMs: BATCH_FOLLOW_TIMEOUT_MS,
+      refreshHistory: true,
+      refreshAfter: true,
+    }), [beginFollow]);
 
   /** 打开一个已有会话（用于“查看分类会话”），加载后可以继续聊天。 */
   const openSession = async (id: string): Promise<void> => {
+    // 已经在这个会话里：可能只是切到了下一阶段，直接接当前轮，别重载打断打字机
+    if (id === sessionIdRef.current) {
+      await attachActive(id);
+      return;
+    }
+
     const page = await fetchHistory(id, 30);
     loadSession(id, page.messages);
   };
 
   const startSession = async (): Promise<void> => {
-    setSessionId(await createSession());
+    const id = await createSession();
+    sessionIdRef.current = id;
+    setSessionId(id);
   };
 
   const reset = () => {
     streamAbort.current?.();
+    sessionIdRef.current = '';
     clearStoredChat();
     commandsPromise.current = null;
     setSessionId('');
@@ -282,20 +380,33 @@ export const useChatSession = () => {
     const saved = readStoredChat();
     if (saved === undefined) return;
 
+    sessionIdRef.current = saved.sessionId;
     setSessionId(saved.sessionId);
     replaceMessages(saved.messages);
     // 存的是上次的快照，先把它补齐到最新，否则一打开看到的是很早的内容
     void pullHistory(saved.sessionId);
 
-    if (saved.pendingRequestId === undefined) return;
+    if (saved.pendingRequestId === undefined) {
+      // 也可能是别的页面在这轮里发的，刷新后同样接上
+      void attachActive(saved.sessionId);
+      return;
+    }
 
     setPendingRequestId(saved.pendingRequestId);
     setSending(true);
+    if (activeFollow.current?.sessionId === saved.sessionId
+      && activeFollow.current.requestId === saved.pendingRequestId) return;
+
     void streamTurn(saved.sessionId, saved.pendingRequestId, { adoptTrailingAssistant: true }).finally(() => {
       setPendingRequestId(undefined);
       setSending(false);
     });
-  }, []);
+  }, [attachActive, pullHistory]);
+
+  // 兜底同步：任何 setSessionId 之后异步接流回来，都以这个镜像为准
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
 
   // 追加/合并后同步镜像，供流式写入决定落点
   useEffect(() => {

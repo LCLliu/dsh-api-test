@@ -33,6 +33,8 @@ export interface classificationBatchProgress {
   requestId?: string;
   moduleRequestId?: string;
   text?: string;
+  /** 阶段二的流式文本；阶段一在 text 里 */
+  moduleText?: string;
   reason?: string;
   error?: string;
   startedAt?: number;
@@ -243,6 +245,7 @@ const runClassificationJob = async (
 
           let moduleResults = new Map<string, moduleResult>();
           let moduleError: string | undefined;
+          let moduleReplyText: string | undefined;
 
           if (!turnFailed && !job.cancelled && moduleItems.length > 0) {
             const moduleRequestId = randomUUID();
@@ -262,7 +265,11 @@ const runClassificationJob = async (
                 content: [{ type: 'text', text: modulePrompt }],
               });
 
-              const moduleReply = await waitForClassificationTurn(job, moduleRequestId);
+              const moduleReply = await waitForClassificationTurn(job, moduleRequestId, (delta) => {
+                batch.moduleText = (batch.moduleText ?? '') + delta;
+              });
+              if (moduleReply.ok) moduleReplyText = moduleReply.text;
+
               if (moduleReply.ok === false) {
                 moduleError = moduleReply.error;
               } else if (moduleReply.reason === 'aborted' || moduleReply.reason === 'error') {
@@ -320,6 +327,7 @@ const runClassificationJob = async (
 
           batch.status = status;
           batch.text = reply.text;
+          batch.moduleText = moduleReplyText ?? batch.moduleText;
           batch.reason = reply.reason;
           batch.error = error;
           batch.endedAt = endedAt;
