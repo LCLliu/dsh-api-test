@@ -408,8 +408,10 @@ export interface requirementItem {
     summary: string;
     /** prd 字段：文本、文档路径或 URL 都按原值展示 */
     prd?: string;
-    /** 模块字段，前端按它分组 */
+    /** 模块树分类结果 l1-l2-l3；前端按它做一级/二级分组 */
     module?: string;
+    /** 源 JSON 的“模块”列，值多是二级模块名，只在条目上作来源标注 */
+    sourceModule?: string;
     /** 后端按 work item ID（其次 Key）匹配到的 HTML 文件路径：相对 JSON 所在目录 */
     requirement_content_path?: string;
     /** 分类进度；缺省表示还没分类过 */

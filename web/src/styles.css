@@ -802,6 +802,30 @@ body {
   font-size: 11px;
 }
 
+/* 一级下面的二级分组：缩进加一条竖线，标题比一级亮一点 */
+.category-subgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.category-subgroup-title {
+  position: sticky;
+  top: 26px;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  padding: 2px 0;
+  background: var(--panel);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
 .requirement-item {
   display: flex;
   flex-direction: column;

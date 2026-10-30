@@ -13,18 +13,47 @@ interface categoryPanelProps {
 
 const UNCATEGORIZED = '未分类';
 
-/** 按“模块”分组；没有模块的排最后。 */
-const groupRequirements = (items: requirementItem[]): Array<[string, requirementItem[]]> => {
-    const map = new Map<string, requirementItem[]>();
+interface modulePath {
+    l1: string;
+    l2: string;
+    l3: string;
+}
+
+/** module 是模块参考表的 l1-l2-l3 路径；模块名自带连字符时并回三级。 */
+const parseModule = (module: string | undefined): modulePath => {
+    const parts = (module ?? '').split('-').map((part) => part.trim()).filter((part) => part !== '');
+    if (parts.length === 0) return { l1: UNCATEGORIZED, l2: '', l3: '' };
+    const [l1 = UNCATEGORIZED, l2 = '', ...rest] = parts;
+    return { l1, l2, l3: rest.join('-') };
+};
+
+/** 一级 → 二级 → 需求；未分类和没有二级的排最后，后者直接挂在一级下面。 */
+type subGroup = [string, requirementItem[]];
+type moduleGroup = [string, subGroup[]];
+
+const groupRequirements = (items: requirementItem[]): moduleGroup[] => {
+    const tree = new Map<string, Map<string, requirementItem[]>>();
     for (const item of items) {
-        const key = item.module ?? UNCATEGORIZED;
-        map.set(key, [...(map.get(key) ?? []), item]);
+        const { l1, l2 } = parseModule(item.module);
+        const sub = tree.get(l1) ?? new Map<string, requirementItem[]>();
+        sub.set(l2, [...(sub.get(l2) ?? []), item]);
+        tree.set(l1, sub);
     }
-    return [...map.entries()].sort(([a], [b]) => {
+
+    const byName = (a: string, b: string): number => {
         if (a === UNCATEGORIZED) return 1;
         if (b === UNCATEGORIZED) return -1;
+        if (a === '') return 1;
+        if (b === '') return -1;
         return a.localeCompare(b, 'zh-CN');
-    });
+    };
+
+    return [...tree.entries()]
+        .sort(([a], [b]) => byName(a, b))
+        .map<moduleGroup>(([l1, sub]) => [
+            l1,
+            [...sub.entries()].sort(([a], [b]) => byName(a, b)),
+        ]);
 };
 
 const classificationStatusOf = (item: requirementItem): { text: string; className: string } => {
@@ -195,38 +224,63 @@ export function CategoryPanel({ open, onClose, send, onViewSession }: categoryPa
             )}
 
             <div className='category-list'>
-                {groups.map(([moduleName, list]) => (
-                    <section key={moduleName} className='category-group'>
-                        <h3 className='category-group-title'>
-                            <span>{moduleName}</span>
-                            <span className='category-group-count'>{list.length}</span>
-                        </h3>
-                        {list.map((item) => {
-                            const primary = item.workItemID ?? item.key;
-                            const classification = classificationStatusOf(item);
-                            return (
-                                <article key={primary} className='requirement-item'>
-                                    <div className='requirement-top'>
-                                        <span className='requirement-id'>{primary}</span>
-                                        {item.key !== primary && (
-                                            <span className='requirement-tag'>Key: {item.key}</span>
-                                        )}
-                                        <span className={`requirement-tag requirement-status ${classification.className}`}>
-                                            {classification.text}
-                                        </span>
-                                    </div>
-                                    <h4 className='requirement-title'>{item.summary}</h4>
-                                    {item.prd !== undefined && <PrdLine value={item.prd} />}
-                                    {item.requirement_content_path !== undefined && (
-                                        <p className='requirement-path' title={item.requirement_content_path}>
-                                            {item.requirement_content_path}
-                                        </p>
+                {groups.map(([l1, subs]) => {
+                    const l1Count = subs.reduce((sum, [, list]) => sum + list.length, 0);
+                    return (
+                        <section key={l1} className='category-group'>
+                            <h3 className='category-group-title'>
+                                <span>{l1}</span>
+                                <span className='category-group-count'>{l1Count}</span>
+                            </h3>
+                            {subs.map(([l2, list]) => (
+                                <section key={l2 || '—'} className='category-subgroup'>
+                                    {l2 !== '' && (
+                                        <h4 className='category-subgroup-title'>
+                                            <span>{l2}</span>
+                                            <span className='category-group-count'>{list.length}</span>
+                                        </h4>
                                     )}
-                                </article>
-                            );
-                        })}
-                    </section>
-                ))}
+                                    {list.map((item) => {
+                                        const primary = item.workItemID ?? item.key;
+                                        const classification = classificationStatusOf(item);
+                                        const path = parseModule(item.module);
+                                        const ungrouped = path.l1 === UNCATEGORIZED;
+                                        return (
+                                            <article key={primary} className='requirement-item'>
+                                                <div className='requirement-top'>
+                                                    <span className='requirement-id'>{primary}</span>
+                                                    {item.key !== primary && (
+                                                        <span className='requirement-tag'>Key: {item.key}</span>
+                                                    )}
+                                                    {!ungrouped && path.l3 !== '' && (
+                                                        <span className='requirement-tag' title={item.module}>
+                                                            {path.l3}
+                                                        </span>
+                                                    )}
+                                                    {ungrouped && item.sourceModule !== undefined && (
+                                                        <span className='requirement-tag' title='源表模块列，分类后换成模块树路径'>
+                                                            {item.sourceModule}
+                                                        </span>
+                                                    )}
+                                                    <span className={`requirement-tag requirement-status ${classification.className}`}>
+                                                        {classification.text}
+                                                    </span>
+                                                </div>
+                                                <h4 className='requirement-title'>{item.summary}</h4>
+                                                {item.prd !== undefined && <PrdLine value={item.prd} />}
+                                                {item.requirement_content_path !== undefined && (
+                                                    <p className='requirement-path' title={item.requirement_content_path}>
+                                                        {item.requirement_content_path}
+                                                    </p>
+                                                )}
+                                            </article>
+                                        );
+                                    })}
+                                </section>
+                            ))}
+                        </section>
+                    );
+                })}
             </div>
 
             {send.status !== 'idle' && (

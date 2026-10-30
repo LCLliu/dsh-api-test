@@ -48,8 +48,13 @@ const readSummary = (row: Record<string, unknown>): string | undefined =>
 const readPrd = (row: Record<string, unknown>): string | undefined =>
   firstString(row, ['prd', 'PRD']);
 
+/** 阶段二写回的模块树路径 l1-l2-l3；只有它才用来分组。 */
 const readModule = (row: Record<string, unknown>): string | undefined =>
-  firstString(row, ['模块', 'module', 'Module']);
+  firstString(row, ['module', 'Module']);
+
+/** 源表自带的模块列，值多是二级模块名，只作为条目上的来源标注。 */
+const readSourceModule = (row: Record<string, unknown>): string | undefined =>
+  firstString(row, ['模块']);
 
 /** 支持根数组，或 requirements / items / list / data 四个常见字段。 */
 const pickRows = (data: unknown): unknown[] => {
@@ -105,6 +110,7 @@ const toRequirement = (
   const summary = readSummary(row) ?? key;
   const prd = readPrd(row);
   const moduleName = readModule(row);
+  const sourceModule = readSourceModule(row);
   const contentPath = matchContentPath(htmlIndex, key, workItemID);
   const classification = isRecord(row.classification)
     ? row.classification as requirementClassification
@@ -116,6 +122,7 @@ const toRequirement = (
     ...(workItemID === undefined ? {} : { workItemID }),
     ...(prd === undefined ? {} : { prd }),
     ...(moduleName === undefined ? {} : { module: moduleName }),
+    ...(sourceModule === undefined ? {} : { sourceModule }),
     ...(contentPath === undefined ? {} : { requirement_content_path: contentPath }),
     ...(classification === undefined ? {} : { classification }),
   };
@@ -353,7 +360,8 @@ const renderPromptItem = (item: promptRequirement, index: number): string => {
     `- summary: ${item.summary}`,
   ];
   if (item.prd !== undefined) lines.push(`- prd: ${item.prd}`);
-  if (item.module !== undefined) lines.push(`- 模块: ${item.module}`);
+  const promptModule = item.sourceModule ?? item.module;
+  if (promptModule !== undefined) lines.push(`- 模块: ${promptModule}`);
   lines.push('', '原文：', item.originalText ?? '（未找到原文）');
   return lines.join('\n');
 };
