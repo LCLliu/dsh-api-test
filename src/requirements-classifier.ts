@@ -1,10 +1,47 @@
 import { readFileSync } from 'node:fs';
-import { readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { requirementClassification, requirementItem } from '../shared/dsh-type.js';
+import { initialRequirementsSource, originalRequirementsSource } from './config.js';
 
-const CONTENT_DIR = 'content';
 const SKILL_FILE = 'ref/SKILL.md';
+
+const resolveFromCwd = (value: string): string => path.resolve(process.cwd(), value);
+
+const exists = async (file: string): Promise<boolean> => {
+  try {
+    await access(file);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** 原始清单路径；未配置时返回 undefined。 */
+const initialFile = (): string | undefined => {
+  const value = initialRequirementsSource();
+  return value === '' ? undefined : resolveFromCwd(value);
+};
+
+/** 需求原文根目录；未配置时按“未找到原文”处理。 */
+const originalRoot = (): string | undefined => {
+  const value = originalRequirementsSource();
+  return value === '' ? undefined : resolveFromCwd(value);
+};
+
+const readJsonFile = async (file: string): Promise<unknown> => {
+  let text: string;
+  try {
+    text = await readFile(file, 'utf-8');
+  } catch {
+    throw new Error(`读取需求 JSON 失败：${file}`);
+  }
+  try {
+    return JSON.parse(text.replace(/^\uFEFF/, ''));
+  } catch {
+    throw new Error(`需求 JSON 解析失败：${file}`);
+  }
+};
 
 /** frontmatter 是给 skill 加载器看的，拼进提示词只留正文规则。 */
 const stripFrontmatter = (text: string): string => text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '');
@@ -68,14 +105,13 @@ const pickRows = (data: unknown): unknown[] => {
   throw new Error('需求 JSON 里没有数组：支持根数组或 requirements/items/list/data 字段');
 };
 
-/** 扫描 content 下的 HTML，按文件名（不含扩展名）建立索引。 */
-const loadHtmlIndex = async (root: string): Promise<Map<string, string>> => {
-  const contentRoot = path.join(root, CONTENT_DIR);
+/** 扫描原文根目录下的 HTML，按文件名（不含扩展名）建立索引；值相对于工作 JSON 目录。 */
+const loadHtmlIndex = async (root: string, workingRoot: string): Promise<Map<string, string>> => {
   const index = new Map<string, string>();
 
   let entries: string[];
   try {
-    entries = await readdir(contentRoot, { recursive: true });
+    entries = await readdir(root, { recursive: true });
   } catch {
     return index;
   }
@@ -84,8 +120,9 @@ const loadHtmlIndex = async (root: string): Promise<Map<string, string>> => {
     if (!entry.toLowerCase().endsWith('.html')) continue;
     const id = path.basename(entry, path.extname(entry));
     if (index.has(id)) continue;
-    const absolute = path.join(contentRoot, entry);
-    index.set(id, path.relative(root, absolute).split(path.sep).join('/'));
+    const absolute = path.join(root, entry);
+    const relative = path.relative(workingRoot, absolute);
+    index.set(id, (relative === '' ? absolute : relative).split(path.sep).join('/'));
   }
   return index;
 };
@@ -111,7 +148,8 @@ const toRequirement = (
   const prd = readPrd(row);
   const moduleName = readModule(row);
   const sourceModule = readSourceModule(row);
-  const contentPath = matchContentPath(htmlIndex, key, workItemID);
+  const contentPath = matchContentPath(htmlIndex, key, workItemID)
+    ?? firstString(row, ['requirement_content_path']);
   const classification = isRecord(row.classification)
     ? row.classification as requirementClassification
     : undefined;
@@ -250,45 +288,113 @@ export const persistClassification = async (
   await writeRequirements(file, data);
 };
 
-/** 读取 env 指向的需求 JSON，扫描 content 下的 HTML；persist=false 时不回写。 */
-export const loadRequirements = async (source: string, persist = true): Promise<requirementItem[]> => {
-  const file = path.resolve(source);
-  const root = path.dirname(file);
+/**
+ * 读取工作 JSON；文件还没生成时回退到原始清单（只读，不写回）。
+ * 原文路径按 ORIGINAL_REQUIREMENT_PATH 扫描，值写成相对工作 JSON 目录的路径。
+ */
+export const loadRequirements = async (source: string): Promise<requirementItem[]> => {
+  const workingFile = resolveFromCwd(source);
+  const workingRoot = path.dirname(workingFile);
+  const file = await exists(workingFile) ? workingFile : initialFile();
+  if (file === undefined) throw new Error(`读取需求 JSON 失败：${workingFile}`);
 
-  let text: string;
-  try {
-    text = await readFile(file, 'utf-8');
-  } catch {
-    throw new Error(`读取需求 JSON 失败：${file}`);
-  }
-
-  let data: unknown;
-  try {
-    data = JSON.parse(text.replace(/^\uFEFF/, ''));
-  } catch {
-    throw new Error(`需求 JSON 解析失败：${file}`);
-  }
-
+  const data = await readJsonFile(file);
   const rows = pickRows(data);
-  const htmlIndex = await loadHtmlIndex(root);
-  const items = rows.map((row, index) => toRequirement(row, index, htmlIndex));
+  const root = originalRoot();
+  const htmlIndex = root === undefined
+    ? new Map<string, string>()
+    : await loadHtmlIndex(root, workingRoot);
 
-  let changed = false;
-  rows.forEach((row, index) => {
-    if (!isRecord(row)) return;
+  return rows.map((row, index) => toRequirement(row, index, htmlIndex));
+};
+
+export interface generatedRequirements {
+  source: string;
+  total: number;
+  matched: number;
+  preserved: number;
+}
+
+/**
+ * 从原始清单生成工作 JSON：只取 Key / work item ID / summary / prd / 模块，
+ * 按 work item ID（其次 Key）匹配原文并写入 requirement_content_path；
+ * 旧工作 JSON 里同一条需求的分类进度和 batch 记录保留，便于中断后继续。
+ */
+export const generateRequirementsFromInit = async (targetSource: string): Promise<generatedRequirements> => {
+  const initFile = initialFile();
+  if (initFile === undefined) throw new Error('未配置 INIT_REQUIREMNET_LIST_PATH');
+  if (targetSource.trim() === '') throw new Error('未配置 REQUIREMNET_JSON_PATH');
+
+  const targetFile = resolveFromCwd(targetSource);
+  if (initFile === targetFile) {
+    throw new Error('INIT_REQUIREMNET_LIST_PATH 不能与 REQUIREMNET_JSON_PATH 相同');
+  }
+
+  const root = originalRoot();
+  if (root === undefined) throw new Error('未配置 ORIGINAL_REQUIREMENT_PATH');
+
+  const initData = await readJsonFile(initFile);
+  const rows = pickRows(initData);
+  const workingRoot = path.dirname(targetFile);
+  const htmlIndex = await loadHtmlIndex(root, workingRoot);
+
+  const existingData = await exists(targetFile) ? await readJsonFile(targetFile) : undefined;
+  const existingRows = existingData === undefined
+    ? []
+    : pickRows(existingData).filter(isRecord);
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const row of existingRows) {
+    const id = readWorkItemID(row) ?? readKey(row);
+    if (id !== undefined) byId.set(id, row);
+  }
+  const existingBatches = isRecord(existingData) && Array.isArray(existingData.classification_batches)
+    ? existingData.classification_batches
+    : [];
+
+  let matched = 0;
+  let preserved = 0;
+  const generated = rows.map((row, index) => {
+    if (!isRecord(row)) throw new Error(`第 ${index + 1} 条需求不是对象`);
 
     const key = readKey(row) ?? readWorkItemID(row) ?? `R-${index + 1}`;
-    const matched = matchContentPath(htmlIndex, key, readWorkItemID(row)) ?? '';
-    const current = typeof row.requirement_content_path === 'string' ? row.requirement_content_path : undefined;
+    const workItemID = readWorkItemID(row);
+    const summary = readSummary(row) ?? key;
+    const prd = readPrd(row);
+    const sourceModule = readSourceModule(row);
+    const old = byId.get(workItemID ?? key);
 
-    if (current !== matched) {
-      row.requirement_content_path = matched;
-      changed = true;
+    let contentPath = matchContentPath(htmlIndex, key, workItemID);
+    if (contentPath !== undefined) {
+      matched += 1;
+    } else if (isRecord(old)) {
+      contentPath = firstString(old, ['requirement_content_path']);
     }
+
+    const result: Record<string, unknown> = { Key: key };
+    if (workItemID !== undefined) result['work item ID'] = workItemID;
+    result.summary = summary;
+    if (prd !== undefined) result.prd = prd;
+    if (sourceModule !== undefined) result['模块'] = sourceModule;
+    if (contentPath !== undefined) result.requirement_content_path = contentPath;
+
+    if (isRecord(old)) {
+      if (old.classification !== undefined) result.classification = old.classification;
+      if (old.Category !== undefined) result.Category = old.Category;
+      if (old.module !== undefined) result.module = old.module;
+      if (old.classification !== undefined || old.Category !== undefined || old.module !== undefined) {
+        preserved += 1;
+      }
+    }
+
+    return result;
   });
 
-  if (changed && persist) await writeRequirements(file, data);
-  return items;
+  await writeRequirements(targetFile, {
+    requirements: generated,
+    classification_batches: existingBatches,
+  });
+
+  return { source: targetFile, total: generated.length, matched, preserved };
 };
 
 /** 简单 HTML 转纯文本，够用于把需求原文拼进提示词。 */
@@ -313,10 +419,17 @@ const htmlToText = (html: string): string => html
   .replace(/\n{3,}/g, '\n\n')
   .trim();
 
-const readRequirementText = async (root: string, contentPath: string): Promise<string | undefined> => {
+const readRequirementText = async (
+  workingRoot: string,
+  allowedRoot: string | undefined,
+  contentPath: string,
+): Promise<string | undefined> => {
+  if (allowedRoot === undefined) return undefined;
+
+  const target = path.isAbsolute(contentPath) ? contentPath : path.resolve(workingRoot, contentPath);
+  if (target !== allowedRoot && !target.startsWith(allowedRoot + path.sep)) return undefined;
+
   try {
-    const target = path.resolve(root, contentPath);
-    if (target !== root && !target.startsWith(root + path.sep)) return undefined;
     return htmlToText(await readFile(target, 'utf-8'));
   } catch {
     return undefined;
@@ -335,15 +448,16 @@ export interface requirementsPromptSource {
 
 /** 一次性读取全部需求条目和原文，供预览或分批任务复用。 */
 export const loadRequirementsForPrompt = async (source: string): Promise<requirementsPromptSource> => {
-  const root = path.dirname(path.resolve(source));
-  const items = await loadRequirements(source, false);
+  const workingRoot = path.dirname(resolveFromCwd(source));
+  const allowedRoot = originalRoot();
+  const items = await loadRequirements(source);
   const missingContent: string[] = [];
   const withText: promptRequirement[] = [];
 
   for (const item of items) {
     const text = item.requirement_content_path === undefined
       ? undefined
-      : await readRequirementText(root, item.requirement_content_path);
+      : await readRequirementText(workingRoot, allowedRoot, item.requirement_content_path);
     if (text === undefined) missingContent.push(item.workItemID ?? item.key);
     withText.push({ ...item, ...(text === undefined ? {} : { originalText: text }) });
   }

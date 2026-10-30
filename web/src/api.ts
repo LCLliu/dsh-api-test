@@ -28,6 +28,7 @@ const requestJson = async <T>(path: string, fallback: string, init?: RequestInit
   return body as T;
 };
 
+
 const post = (payload: unknown): RequestInit => ({
   method: 'POST',
   headers: { 'content-type': 'application/json' },

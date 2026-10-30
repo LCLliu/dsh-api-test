@@ -15,6 +15,7 @@ import {
 } from './module-classifier.js';
 import {
   buildRequirementsPromptBatch,
+  generateRequirementsFromInit,
   loadRequirementsForPrompt,
   persistClassification,
   type classificationUpdate,
@@ -433,6 +434,9 @@ export const startClassificationJob = async (
   const stopAfterBatches = Number.isInteger(requestedStopAfter) && requestedStopAfter > 0 && requestedStopAfter <= 200
     ? requestedStopAfter
     : 0;
+
+  // 每次开始分析都从原始清单重生成工作 JSON；同一条需求的分类进度按 work item ID 保留
+  await generateRequirementsFromInit(source);
 
   const loaded = await loadRequirementsForPrompt(source);
   const pending = loaded.items.filter((item) => item.classification?.status !== 'done');

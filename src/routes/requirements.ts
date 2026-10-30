@@ -1,6 +1,12 @@
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { Router, type Response } from 'express';
 import { requirementsSource } from '../config.js';
-import { buildRequirementsPrompt, loadRequirements } from '../requirements-classifier.js';
+import {
+  buildRequirementsPrompt,
+  generateRequirementsFromInit,
+  loadRequirements,
+} from '../requirements-classifier.js';
 import {
   cancelClassificationJob,
   classificationJobError,
@@ -14,7 +20,7 @@ import { resetClassificationSession } from '../requirements/session.js';
 const sourceOrError = (res: Response): string | undefined => {
   const source = requirementsSource();
   if (source === '') {
-    res.status(400).json({ error: '未配置 REQUIREMENTS_JSON_PATH' });
+    res.status(400).json({ error: '未配置 REQUIREMNET_JSON_PATH' });
     return undefined;
   }
   return source;
@@ -29,6 +35,10 @@ export const createRequirementsRouter = (): Router => {
     if (source === undefined) return;
 
     try {
+      // 点开“分类需求”面板会请求这里：工作 JSON 还没生成时先从原始清单生成
+      if (!existsSync(path.resolve(process.cwd(), source)) && !isClassificationJobActive()) {
+        await generateRequirementsFromInit(source);
+      }
       res.json({ items: await loadRequirements(source) });
     } catch (err) {
       res.status(502).json({ error: (err as Error).message });
