@@ -193,6 +193,8 @@ body {
   margin-top: 20px;
   padding-right: 6px;
   overflow-y: auto;
+  /* 浏览器滚动锚定会在内容长高时改 scrollTop，和自动贴底打架 */
+  overflow-anchor: none;
   text-align: left;
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;

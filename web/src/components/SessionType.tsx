@@ -32,6 +32,8 @@ export function SessionType({
   // 当前的对话进行时，发送消息没有自动的追寻底部，现在加上自动贴附底部
   // 当前的对话为底部时，发送消息才会自动贴附底部，如果不是则不贴附。
   const stickToBottom = useRef(true);
+  /** 上一次自动贴底后的 scrollTop；用来区分“内容长高导致的延迟 scroll 事件”和用户真的往上滑。 */
+  const lastAutoScrollTop = useRef(0);
 
   /** 
    * scrollHeight：内容总高度,包括被裁掉、看不见的那部分
@@ -41,23 +43,45 @@ export function SessionType({
   const handleScroll = () => {
     const el = listRef.current;
     if (el !== null) {
+      // 自动贴底后内容继续长高时 scrollTop 还停在原位，这不是用户上滑，保持吸附
+      if (Math.abs(el.scrollTop - lastAutoScrollTop.current) < 2) return;
       // 距离底部的距离小于24时默认是底部
       stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
     }
   };
 
-  // 流式输出时正文在同一个气泡里变长，用最后一条的长度一起触发贴底
+  // 流式输出时正文在同一个气泡里变长，用最后一条的长度和消息数一起触发贴底
   const lastLength = chat.messages[chat.messages.length - 1]?.text.length ?? 0;
+  const messageCount = chat.messages.length;
 
   // 换会话就是换内容，上一份滚动位置不该带进来：打开直接落在最新一条
   useEffect(() => {
     stickToBottom.current = true;
+    lastAutoScrollTop.current = 0;
   }, [chat.sessionId]);
 
   useEffect(() => {
     const el = listRef.current;
-    if (el !== null && stickToBottom.current) el.scrollTop = el.scrollHeight;
-  }, [lastLength, chat.sending, chat.sessionId]);
+    if (el !== null && stickToBottom.current) {
+      el.scrollTop = el.scrollHeight;
+      lastAutoScrollTop.current = el.scrollTop;
+    }
+  }, [lastLength, messageCount, chat.sending, chat.streaming, chat.sessionId]);
+
+  // 需求抽屉/窗口缩放会改变消息区宽度，换行变多后也要补一次贴底
+  useEffect(() => {
+    const el = listRef.current;
+    if (el === null) return;
+
+    const observer = new ResizeObserver(() => {
+      if (stickToBottom.current) {
+        el.scrollTop = el.scrollHeight;
+        lastAutoScrollTop.current = el.scrollTop;
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [chat.sessionId]);
 
   return (
     <>
