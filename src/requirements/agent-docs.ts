@@ -1,9 +1,3 @@
-import { mkdir, rename, writeFile } from 'node:fs/promises';
-import path from 'node:path';
-
-/** 分类结果落盘目录，相对需求 JSON 所在目录。 */
-const DOCS_DIR = '.agentGraDocs';
-
 export type classificationResult = Record<string, unknown>;
 
 const isRecord = (value: unknown): value is classificationResult =>
@@ -86,34 +80,3 @@ export const matchBatchResults = (itemIds: string[], text: string): Map<string, 
   return matched;
 };
 
-/** workItemID 会进文件名：换掉分隔符等字符、去掉开头的点，避免跳出目录。 */
-const safeFileName = (id: string): string => {
-  const cleaned = id.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '').slice(0, 80);
-  return cleaned === '' ? 'unnamed' : cleaned;
-};
-
-/**
- * 每条需求写一个 JSON 文件到 `<需求 JSON 目录>/.agentGraDocs/`。
- * 先写临时文件再改名，避免中断留下半截文件。
- * @returns id 到相对路径的映射，相对路径直接写回 requirement.json
- */
-export const writeAgentDocs = async (
-  source: string,
-  results: Map<string, classificationResult>,
-): Promise<Map<string, string>> => {
-  const root = path.dirname(path.resolve(source));
-  const dir = path.join(root, DOCS_DIR);
-  await mkdir(dir, { recursive: true });
-
-  const written = new Map<string, string>();
-  for (const [id, result] of results) {
-    const name = `${safeFileName(id)}.json`;
-    const file = path.join(dir, name);
-    const tmp = `${file}.tmp`;
-    await writeFile(tmp, JSON.stringify(result, null, 2) + '\n', 'utf-8');
-    await rename(tmp, file);
-    written.set(id, `${DOCS_DIR}/${name}`);
-  }
-
-  return written;
-};

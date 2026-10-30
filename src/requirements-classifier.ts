@@ -168,6 +168,10 @@ export const recoverStaleRunning = async (source: string): Promise<number> => {
 export interface classificationUpdate {
   workItemID: string;
   classification: requirementClassification;
+  /** 模型解析出的意图结果；存在时追加到该需求的 Category 数组 */
+  category?: unknown;
+  /** 模块树分类结果：l1-l2-l3 */
+  module?: string;
 }
 
 export interface classificationBatchRecord {
@@ -208,7 +212,20 @@ export const persistClassification = async (
 
   for (const update of updates) {
     const row = byId.get(update.workItemID);
-    if (row !== undefined) row.classification = update.classification;
+    if (row === undefined) continue;
+
+    row.classification = update.classification;
+    if (update.module !== undefined) row.module = update.module;
+    if (update.category === undefined) continue;
+
+    const current = row.Category;
+    const categories = Array.isArray(current)
+      ? current
+      : current === undefined
+        ? []
+        : [current];
+    categories.push(update.category);
+    row.Category = categories;
   }
 
   if (isRecord(data)) {

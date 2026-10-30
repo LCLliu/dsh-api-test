@@ -3,9 +3,16 @@ import { dsh } from '../dsh/client.js';
 import { followTurn } from '../dsh/stream.js';
 import {
   matchBatchResults,
-  writeAgentDocs,
   type classificationResult,
 } from './agent-docs.js';
+import {
+  buildModulePrompt,
+  loadModuleOptions,
+  loadModuleSkill,
+  matchModuleResults,
+  type moduleOption,
+  type moduleResult,
+} from './module-classifier.js';
 import {
   buildRequirementsPromptBatch,
   loadRequirementsForPrompt,
@@ -24,6 +31,7 @@ export interface classificationBatchProgress {
   itemIds: string[];
   status: classificationBatchStatus;
   requestId?: string;
+  moduleRequestId?: string;
   text?: string;
   reason?: string;
   error?: string;
@@ -102,8 +110,8 @@ type turnOutcome = { ok: true; text: string; reason: string } | { ok: false; err
  */
 const waitForClassificationTurn = async (
   job: classificationJob,
-  batch: classificationBatchProgress,
   requestId: string,
+  onDelta?: (delta: string) => void,
 ): Promise<turnOutcome> => {
   const controller = new AbortController();
   jobAborts.set(job.id, controller);
@@ -113,7 +121,7 @@ const waitForClassificationTurn = async (
       timeoutMs: TURN_TIMEOUT_MS,
       signal: controller.signal,
       onDelta: (delta) => {
-        batch.text = (batch.text ?? '') + delta;
+        onDelta?.(delta);
       },
     });
     return { ok: true, text: reply.text, reason: reply.reason };
@@ -128,6 +136,8 @@ const runClassificationJob = async (
   job: classificationJob,
   items: promptRequirement[],
   source: string,
+  moduleOptions: moduleOption[],
+  moduleSkill: string,
 ): Promise<void> => {
   try {
     for (const batch of job.batches) {
@@ -184,7 +194,9 @@ const runClassificationJob = async (
           content: [{ type: 'text', text: built.prompt }],
         });
 
-        const reply = await waitForClassificationTurn(job, batch, requestId);
+        const reply = await waitForClassificationTurn(job, requestId, (delta) => {
+          batch.text = (batch.text ?? '') + delta;
+        });
         if (reply.ok === false) {
           const endedAt = Date.now();
           const error = reply.error;
@@ -220,24 +232,91 @@ const runClassificationJob = async (
             break;
           }
         } else {
-          const endedAt = Date.now();
           const turnFailed = reply.reason === 'aborted' || reply.reason === 'error';
-
-          // 每条需求一个 JSON 落到 .agentGraDocs；解析或写盘失败都算这条没成，下次重跑会再捞回来
-          const results = turnFailed
+          const stage1Results = turnFailed
             ? new Map<string, classificationResult>()
             : matchBatchResults(batch.itemIds, reply.text);
-          let docs = new Map<string, string>();
-          let docError: string | undefined;
-          try {
-            docs = await writeAgentDocs(source, results);
-          } catch (err) {
-            docError = err instanceof Error ? err.message : String(err);
+
+          const batchItems = items.slice(batch.offset, batch.offset + batch.count);
+          const moduleItems = batchItems.filter((item) => stage1Results.has(item.workItemID ?? item.key));
+          const moduleIds = moduleItems.map((item) => item.workItemID ?? item.key);
+
+          let moduleResults = new Map<string, moduleResult>();
+          let moduleError: string | undefined;
+
+          if (!turnFailed && !job.cancelled && moduleItems.length > 0) {
+            const moduleRequestId = randomUUID();
+            batch.moduleRequestId = moduleRequestId;
+            try {
+              const modulePrompt = buildModulePrompt(
+                moduleItems,
+                moduleOptions,
+                moduleSkill,
+                batch.index,
+                job.totalBatches,
+              );
+              await dsh.prompt({
+                requestId: moduleRequestId,
+                sessionId: job.sessionId,
+                mode: 'queue',
+                content: [{ type: 'text', text: modulePrompt }],
+              });
+
+              const moduleReply = await waitForClassificationTurn(job, moduleRequestId);
+              if (moduleReply.ok === false) {
+                moduleError = moduleReply.error;
+              } else if (moduleReply.reason === 'aborted' || moduleReply.reason === 'error') {
+                moduleError = `模块分类结束原因：${moduleReply.reason}`;
+              } else {
+                moduleResults = matchModuleResults(moduleIds, moduleReply.text, moduleOptions);
+              }
+            } catch (err) {
+              moduleError = err instanceof Error ? err.message : String(err);
+            }
+          } else if (job.cancelled) {
+            moduleError = '已取消';
           }
 
-          const failed = turnFailed || docError !== undefined;
-          const status: 'done' | 'error' = failed ? 'error' : 'done';
-          const error = turnFailed ? `结束原因：${reply.reason}` : docError;
+          const endedAt = Date.now();
+          const updates: classificationUpdate[] = batch.itemIds.map((id) => {
+            const stage1 = stage1Results.get(id);
+            const module = moduleResults.get(id);
+            const itemError = turnFailed
+              ? `结束原因：${reply.reason}`
+              : job.cancelled
+                ? '已取消'
+                : stage1 === undefined
+                  ? '意图识别回复里没解析到这条需求的 JSON'
+                  : moduleError !== undefined
+                    ? moduleError
+                    : module === undefined
+                      ? '模块分类回复里没有匹配的 l1-l2-l3'
+                      : undefined;
+            const done = itemError === undefined && stage1 !== undefined && module !== undefined;
+
+            return {
+              workItemID: id,
+              classification: {
+                status: done ? 'done' : 'error',
+                batch: batch.index,
+                requestId,
+                sessionId: job.sessionId,
+                reason: reply.reason,
+                ...(itemError === undefined ? {} : { error: itemError }),
+                classifiedAt: endedAt,
+              },
+              ...(done && stage1 !== undefined && module !== undefined
+                ? { category: stage1, module: module.module }
+                : {}),
+            };
+          });
+
+          const failedItems = updates.filter((update) => update.classification.status !== 'done').length;
+          const status: 'done' | 'error' = failedItems === 0 ? 'done' : 'error';
+          const error = failedItems === 0
+            ? undefined
+            : updates.find((update) => update.classification.error !== undefined)?.classification.error
+              ?? '本批有需求分类失败';
 
           batch.status = status;
           batch.text = reply.text;
@@ -245,24 +324,6 @@ const runClassificationJob = async (
           batch.error = error;
           batch.endedAt = endedAt;
 
-          const updates: classificationUpdate[] = batch.itemIds.map((id) => {
-            const parsed = results.has(id);
-            const itemError = error ?? (parsed ? undefined : '回复里没解析到这条需求的 JSON');
-            const docPath = docs.get(id);
-            return {
-              workItemID: id,
-              classification: {
-                status: status === 'done' && parsed ? 'done' : 'error',
-                batch: batch.index,
-                requestId,
-                sessionId: job.sessionId,
-                reason: reply.reason,
-                ...(itemError === undefined ? {} : { error: itemError }),
-                ...(docPath === undefined ? {} : { agentDocPath: docPath }),
-                classifiedAt: endedAt,
-              },
-            };
-          });
           await persistClassification(source, updates, {
             batch: batch.index,
             requestId,
@@ -373,6 +434,8 @@ export const startClassificationJob = async (
 
   const chosen = mode === 'single' ? pending.slice(0, batchSize) : pending;
   const selected = stopAfterBatches > 0 ? chosen.slice(0, stopAfterBatches * batchSize) : chosen;
+  const moduleOptions = await loadModuleOptions();
+  const moduleSkill = await loadModuleSkill();
   const sessionId = await ensureClassificationSession();
   const totalBatches = Math.ceil(selected.length / batchSize);
   const job: classificationJob = {
@@ -404,7 +467,7 @@ export const startClassificationJob = async (
 
   jobs.set(job.id, job);
   activeJobId = job.id;
-  void runClassificationJob(job, selected, source);
+  void runClassificationJob(job, selected, source, moduleOptions, moduleSkill);
 
   return {
     jobId: job.id,
