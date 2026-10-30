@@ -1,6 +1,6 @@
 ---
 name: cockpit-requirement-analysis
-description: Analyze smart-cockpit (智能座舱) test requirements into a strict JSON classification of modules, test scenes, required file types, and calculation needs. Use when classifying or triaging 智能座舱测试需求/需求条目/需求分类/模块识别, or when analyzing requirements from PRDs, work items, HTML requirement documents, or requirement lists into modules such as MCU, SWP, TBOX, Cluster/仪表, ADAS, OTA, STR, Voice, APP, UIUE, Cloud.
+description: 分析智能座舱测试需求，输出严格的 JSON 分类结果，涵盖测试模块、测试场景、所需文件类型与计算需求。当需要对智能座舱测试需求／需求条目做需求分类、模块识别或梳理时使用；输入可来自 PRD、工作项、HTML 需求文档或需求清单；模块取值限定为 MCU、SWP、TBOX、Cluster/仪表、ADAS、OTA、STR、Voice、APP、UIUE、Cloud。
 ---
 
 # 智能座舱测试需求分析
