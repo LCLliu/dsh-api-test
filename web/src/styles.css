@@ -857,6 +857,12 @@ body {
   margin-left: auto;
 }
 
+/* 卡片行内的分析按钮：比面板顶部的 ghost 按钮小一号 */
+.requirement-analyze {
+  padding: 1px 10px;
+  font-size: 11px;
+}
+
 .requirement-status-done {
   color: var(--green);
   border-color: color-mix(in srgb, var(--green) 45%, var(--line));
@@ -880,32 +886,6 @@ body {
   margin: 0;
   font-size: 14px;
   font-weight: 500;
-}
-
-.requirement-prd {
-  display: block;
-  margin: 0;
-  overflow: hidden;
-  font-size: 11px;
-  color: var(--muted);
-  text-decoration: none;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-a.requirement-prd:hover {
-  color: var(--text);
-  text-decoration: underline;
-}
-
-.requirement-path {
-  margin: 0;
-  overflow: hidden;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  color: var(--muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .category-hint {

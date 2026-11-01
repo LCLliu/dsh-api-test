@@ -69,17 +69,8 @@ const classificationStatusOf = (item: requirementItem): { text: string; classNam
     }
 };
 
-/** prd 是 http(s) URL 时渲染成链接，否则按文本展示。 */
-const PrdLine = ({ value }: { value: string }) => {
-    if (/^https?:\/\//i.test(value)) {
-        return (
-            <a className='requirement-prd' href={value} target='_blank' rel='noreferrer' title={value}>
-                {value}
-            </a>
-        );
-    }
-    return <p className='requirement-prd' title={value}>{value}</p>;
-};
+/** 已分类需求上的“分析”入口：规格分析逻辑待接，这里先占位。 */
+const analyzeRequirement = (item: requirementItem): void => {};
 
 /** 右侧抽屉：遍历 env 指向的需求 JSON，按模块分组展示。 */
 export function CategoryPanel({ open, onClose, send, onViewSession }: categoryPanelProps) {
@@ -243,36 +234,30 @@ export function CategoryPanel({ open, onClose, send, onViewSession }: categoryPa
                                     {list.map((item) => {
                                         const primary = item.workItemID ?? item.key;
                                         const classification = classificationStatusOf(item);
-                                        const path = parseModule(item.module);
-                                        const ungrouped = path.l1 === UNCATEGORIZED;
+                                        const moduleName = item.module ?? item.sourceModule;
+                                        const detail = [
+                                            `Key: ${item.key}`,
+                                            moduleName === undefined ? undefined : `模块: ${moduleName}`,
+                                            item.prd,
+                                            item.requirement_content_path,
+                                        ].filter((line): line is string => line !== undefined && line !== '').join('\n');
                                         return (
-                                            <article key={primary} className='requirement-item'>
+                                            <article key={primary} className='requirement-item' title={detail}>
                                                 <div className='requirement-top'>
                                                     <span className='requirement-id'>{primary}</span>
-                                                    {item.key !== primary && (
-                                                        <span className='requirement-tag'>Key: {item.key}</span>
-                                                    )}
-                                                    {!ungrouped && path.l3 !== '' && (
-                                                        <span className='requirement-tag' title={item.module}>
-                                                            {path.l3}
-                                                        </span>
-                                                    )}
-                                                    {ungrouped && item.sourceModule !== undefined && (
-                                                        <span className='requirement-tag' title='源表模块列，分类后换成模块树路径'>
-                                                            {item.sourceModule}
-                                                        </span>
-                                                    )}
                                                     <span className={`requirement-tag requirement-status ${classification.className}`}>
                                                         {classification.text}
                                                     </span>
+                                                    {item.classification?.status === 'done' && (
+                                                        <button
+                                                            className='ghost requirement-analyze'
+                                                            onClick={() => analyzeRequirement(item)}
+                                                        >
+                                                            分析
+                                                        </button>
+                                                    )}
                                                 </div>
                                                 <h4 className='requirement-title'>{item.summary}</h4>
-                                                {item.prd !== undefined && <PrdLine value={item.prd} />}
-                                                {item.requirement_content_path !== undefined && (
-                                                    <p className='requirement-path' title={item.requirement_content_path}>
-                                                        {item.requirement_content_path}
-                                                    </p>
-                                                )}
                                             </article>
                                         );
                                     })}
