@@ -6,21 +6,22 @@ import {
   type classificationResult,
 } from './agent-docs.js';
 import {
-  buildModulePrompt,
   loadModuleOptions,
-  loadModuleSkill,
   matchModuleResults,
   type moduleOption,
-  type moduleResult,
 } from './module-classifier.js';
 import {
-  buildRequirementsPromptBatch,
   generateRequirementsFromInit,
   loadRequirementsForPrompt,
   persistClassification,
   type classificationUpdate,
   type promptRequirement,
 } from '../requirements-classifier.js';
+import {
+  buildModulePrompt,
+  buildRequirementsPromptBatch,
+  loadModuleSkill,
+} from '../prompts.js';
 import { ensureClassificationSession } from './session.js';
 
 type classificationBatchStatus = 'pending' | 'running' | 'done' | 'error';
@@ -244,7 +245,7 @@ const runClassificationJob = async (
           const moduleItems = batchItems.filter((item) => stage1Results.has(item.workItemID ?? item.key));
           const moduleIds = moduleItems.map((item) => item.workItemID ?? item.key);
 
-          let moduleResults = new Map<string, moduleResult>();
+          let moduleResults = new Map<string, string>();
           let moduleError: string | undefined;
           let moduleReplyText: string | undefined;
 
@@ -288,7 +289,7 @@ const runClassificationJob = async (
           const endedAt = Date.now();
           const updates: classificationUpdate[] = batch.itemIds.map((id) => {
             const stage1 = stage1Results.get(id);
-            const module = moduleResults.get(id);
+            const modulePath = moduleResults.get(id);
             const itemError = turnFailed
               ? `结束原因：${reply.reason}`
               : job.cancelled
@@ -297,10 +298,10 @@ const runClassificationJob = async (
                   ? '意图识别回复里没解析到这条需求的 JSON'
                   : moduleError !== undefined
                     ? moduleError
-                    : module === undefined
+                    : modulePath === undefined
                       ? '模块分类回复里没有匹配的 l1-l2-l3'
                       : undefined;
-            const done = itemError === undefined && stage1 !== undefined && module !== undefined;
+            const done = itemError === undefined && stage1 !== undefined && modulePath !== undefined;
 
             return {
               workItemID: id,
@@ -313,8 +314,8 @@ const runClassificationJob = async (
                 ...(itemError === undefined ? {} : { error: itemError }),
                 classifiedAt: endedAt,
               },
-              ...(done && stage1 !== undefined && module !== undefined
-                ? { category: stage1, module: module.module }
+              ...(done && stage1 !== undefined && modulePath !== undefined
+                ? { category: stage1, module: modulePath }
                 : {}),
             };
           });
@@ -447,7 +448,7 @@ export const startClassificationJob = async (
   const chosen = mode === 'single' ? pending.slice(0, batchSize) : pending;
   const selected = stopAfterBatches > 0 ? chosen.slice(0, stopAfterBatches * batchSize) : chosen;
   const moduleOptions = await loadModuleOptions();
-  const moduleSkill = await loadModuleSkill();
+  const moduleSkill = loadModuleSkill();
   const sessionId = await ensureClassificationSession();
   const totalBatches = Math.ceil(selected.length / batchSize);
   const job: classificationJob = {

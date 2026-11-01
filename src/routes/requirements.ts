@@ -3,10 +3,10 @@ import path from 'node:path';
 import { Router, type Response } from 'express';
 import { requirementsSource } from '../config.js';
 import {
-  buildRequirementsPrompt,
   generateRequirementsFromInit,
   loadRequirements,
 } from '../requirements-classifier.js';
+import { buildRequirementsPrompt } from '../prompts.js';
 import {
   cancelClassificationJob,
   classificationJobError,
